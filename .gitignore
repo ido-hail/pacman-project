@@ -7,3 +7,7 @@ node_modules
 *.tfplan
 crash.log
 crash.*.log
+
+# Python
+__pycache__/
+*.pyc
