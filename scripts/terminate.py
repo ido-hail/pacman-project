@@ -9,6 +9,8 @@ from pathlib import Path
 
 EXPECTED_ACCOUNT_ID = "506456084249"
 AWS_REGION = "us-east-1"
+PROJECT_NAME = "pacman"
+ENVIRONMENT = "dev"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TERRAFORM_DIR = PROJECT_ROOT / "terraform"
@@ -18,6 +20,31 @@ def check_tool(name):
     if shutil.which(name) is None:
         print(f"ERROR: Required tool '{name}' was not found.")
         sys.exit(1)
+
+
+def run_aws_json(args):
+    command = [
+        "aws",
+        *args,
+        "--region",
+        AWS_REGION,
+        "--output",
+        "json",
+        "--no-cli-pager",
+    ]
+
+    result = subprocess.run(
+        command,
+        text=True,
+        capture_output=True,
+    )
+
+    if result.returncode != 0:
+        print("ERROR: AWS CLI command failed.")
+        print(result.stderr.strip())
+        sys.exit(1)
+
+    return json.loads(result.stdout)
 
 
 def get_aws_identity():
@@ -67,6 +94,23 @@ def terraform_destroy_preview():
     return result.returncode
 
 
+def get_tagged_runtime_resources():
+    data = run_aws_json(
+        [
+            "resourcegroupstaggingapi",
+            "get-resources",
+            "--tag-filters",
+            f"Key=Project,Values={PROJECT_NAME}",
+            f"Key=Environment,Values={ENVIRONMENT}",
+        ]
+    )
+
+    return [
+        resource["ResourceARN"]
+        for resource in data.get("ResourceTagMappingList", [])
+    ]
+
+
 def main():
     print("=== Pac-Man AWS Teardown Safety Check ===")
 
@@ -90,6 +134,7 @@ def main():
 
     print()
     print("AWS account verification passed.")
+
     print()
     print("=== Terraform Destroy Preview ===")
 
@@ -105,6 +150,20 @@ def main():
     else:
         print("ERROR: Terraform destroy preview failed.")
         sys.exit(1)
+
+    print()
+    print("=== AWS Tagged Runtime Inventory ===")
+
+    resources = get_tagged_runtime_resources()
+
+    if resources:
+        print(f"Found {len(resources)} tagged runtime resource(s):")
+
+        for resource_arn in resources:
+            print(f"- {resource_arn}")
+
+    else:
+        print("No tagged runtime resources found.")
 
     print()
     print("Safety check completed.")
