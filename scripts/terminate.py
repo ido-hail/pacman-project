@@ -11,6 +11,7 @@ EXPECTED_ACCOUNT_ID = "506456084249"
 AWS_REGION = "us-east-1"
 PROJECT_NAME = "pacman"
 ENVIRONMENT = "dev"
+CLUSTER_NAME = f"{PROJECT_NAME}-{ENVIRONMENT}"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TERRAFORM_DIR = PROJECT_ROOT / "terraform"
@@ -111,6 +112,22 @@ def get_tagged_runtime_resources():
     ]
 
 
+def get_auto_mode_resources():
+    data = run_aws_json(
+        [
+            "resourcegroupstaggingapi",
+            "get-resources",
+            "--tag-filters",
+            f"Key=eks:eks-cluster-name,Values={CLUSTER_NAME}",
+        ]
+    )
+
+    return [
+        resource["ResourceARN"]
+        for resource in data.get("ResourceTagMappingList", [])
+    ]
+
+
 def get_eks_clusters():
     data = run_aws_json(
         [
@@ -179,6 +196,20 @@ def main():
 
     else:
         print("No tagged runtime resources found.")
+
+    print()
+    print("=== EKS Auto Mode Resource Inventory ===")
+
+    auto_mode_resources = get_auto_mode_resources()
+
+    if auto_mode_resources:
+        print(f"Found {len(auto_mode_resources)} Auto Mode resource(s):")
+
+        for resource_arn in auto_mode_resources:
+            print(f"- {resource_arn}")
+
+    else:
+        print("No EKS Auto Mode tagged resources found.")
 
     print()
     print("=== EKS Cluster Inventory ===")
