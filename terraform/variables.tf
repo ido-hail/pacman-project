@@ -15,3 +15,15 @@ variable "environment" {
   type        = string
   default     = "dev"
 }
+
+variable "kubernetes_version" {
+  description = "Kubernetes version used by the EKS cluster"
+  type        = string
+  default     = "1.34"
+}
+
+variable "eks_public_access_cidr" {
+  description = "Public CIDR allowed to access the EKS Kubernetes API"
+  type        = string
+  default     = "0.0.0.0/0"
+}
