@@ -111,6 +111,21 @@ def get_tagged_runtime_resources():
     ]
 
 
+def get_eks_clusters():
+    data = run_aws_json(
+        [
+            "eks",
+            "list-clusters",
+        ]
+    )
+
+    return [
+        cluster
+        for cluster in data.get("clusters", [])
+        if cluster.startswith(f"{PROJECT_NAME}-{ENVIRONMENT}")
+    ]
+
+
 def main():
     print("=== Pac-Man AWS Teardown Safety Check ===")
 
@@ -164,6 +179,20 @@ def main():
 
     else:
         print("No tagged runtime resources found.")
+
+    print()
+    print("=== EKS Cluster Inventory ===")
+
+    eks_clusters = get_eks_clusters()
+
+    if eks_clusters:
+        print(f"Found {len(eks_clusters)} project EKS cluster(s):")
+
+        for cluster in eks_clusters:
+            print(f"- {cluster}")
+
+    else:
+        print("No project EKS clusters found.")
 
     print()
     print("Safety check completed.")
