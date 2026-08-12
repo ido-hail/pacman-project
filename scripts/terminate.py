@@ -17,6 +17,7 @@ ENVIRONMENT = "dev"
 CLUSTER_NAME = f"{PROJECT_NAME}-{ENVIRONMENT}"
 NAMESPACE = "pacman"
 STORAGE_CLASS = "gp3-auto"
+AUTO_MODE_CSI_DRIVER = "ebs.csi.eks.amazonaws.com"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TERRAFORM_DIR = PROJECT_ROOT / "terraform"
@@ -53,7 +54,7 @@ def run_command(command, allow_failure=False):
     return result
 
 
-def run_aws_json(args):
+def run_aws_json(args, allow_failure=False):
     result = run_command(
         [
             "aws",
@@ -63,18 +64,19 @@ def run_aws_json(args):
             "--output",
             "json",
             "--no-cli-pager",
-        ]
+        ],
+        allow_failure=allow_failure,
     )
+
+    if result.returncode != 0:
+        return None
 
     output = result.stdout.strip()
 
-    if not output:
-        return {}
-
-    return json.loads(output)
+    return json.loads(output) if output else {}
 
 
-def run_aws(args):
+def run_aws(args, allow_failure=False):
     return run_command(
         [
             "aws",
@@ -82,12 +84,13 @@ def run_aws(args):
             "--region",
             AWS_REGION,
             "--no-cli-pager",
-        ]
+        ],
+        allow_failure=allow_failure,
     )
 
 
-def run_kubectl(args, allow_failure=False, print_output=True):
-    result = run_command(
+def run_kubectl(args, allow_failure=False):
+    return run_command(
         [
             "kubectl",
             "--context",
@@ -97,26 +100,23 @@ def run_kubectl(args, allow_failure=False, print_output=True):
         allow_failure=allow_failure,
     )
 
-    if print_output and result.stdout.strip():
-        print(result.stdout.strip())
 
-    if print_output and result.stderr.strip():
-        print(result.stderr.strip())
-
-    return result
-
-
-def kubectl_json(args):
+def kubectl_json(args, allow_failure=False):
     result = run_kubectl(
         [
             *args,
             "-o",
             "json",
         ],
-        print_output=False,
+        allow_failure=allow_failure,
     )
 
-    return json.loads(result.stdout)
+    if result.returncode != 0:
+        return None
+
+    output = result.stdout.strip()
+
+    return json.loads(output) if output else {}
 
 
 def get_aws_identity():
@@ -153,7 +153,7 @@ def cluster_exists():
     return bool(get_eks_clusters())
 
 
-def get_tagged_runtime_resources():
+def get_tagged_project_resources():
     data = run_aws_json(
         [
             "resourcegroupstaggingapi",
@@ -165,8 +165,8 @@ def get_tagged_runtime_resources():
     )
 
     return [
-        resource["ResourceARN"]
-        for resource in data.get("ResourceTagMappingList", [])
+        item["ResourceARN"]
+        for item in data.get("ResourceTagMappingList", [])
     ]
 
 
@@ -181,8 +181,8 @@ def get_auto_mode_resources():
     )
 
     return [
-        resource["ResourceARN"]
-        for resource in data.get("ResourceTagMappingList", [])
+        item["ResourceARN"]
+        for item in data.get("ResourceTagMappingList", [])
     ]
 
 
@@ -219,9 +219,49 @@ def get_cluster_ebs_volumes():
         {
             "id": volume["VolumeId"],
             "state": volume["State"],
+            "size": volume["Size"],
+            "type": volume["VolumeType"],
+            "az": volume["AvailabilityZone"],
+            "encrypted": volume["Encrypted"],
         }
         for volume in data.get("Volumes", [])
     ]
+
+
+def get_volume(volume_id):
+    result = run_command(
+        [
+            "aws",
+            "ec2",
+            "describe-volumes",
+            "--include-managed-resources",
+            "--volume-ids",
+            volume_id,
+            "--region",
+            AWS_REGION,
+            "--output",
+            "json",
+            "--no-cli-pager",
+        ],
+        allow_failure=True,
+    )
+
+    if result.returncode != 0:
+        if "InvalidVolume.NotFound" in result.stderr:
+            return None
+
+        print(f"ERROR: Could not inspect EBS volume {volume_id}.")
+        print(result.stderr.strip())
+        sys.exit(1)
+
+    data = json.loads(result.stdout)
+    volumes = data.get("Volumes", [])
+
+    return volumes[0] if volumes else None
+
+
+def volume_exists(volume_id):
+    return get_volume(volume_id) is not None
 
 
 def terraform_destroy_preview(verbose=False):
@@ -308,15 +348,15 @@ def verify_kube_context():
     contexts = result.stdout.splitlines()
 
     if EXPECTED_KUBE_CONTEXT not in contexts:
-        print("ERROR: Expected EKS kubeconfig context was not found.")
+        print("ERROR: Expected kubeconfig context was not found.")
         print(f"Expected: {EXPECTED_KUBE_CONTEXT}")
         print()
-        print("Run:")
         print(
-            f"aws eks update-kubeconfig "
+            f"Run: aws eks update-kubeconfig "
             f"--region {AWS_REGION} "
             f"--name {CLUSTER_NAME}"
         )
+
         return False
 
     return True
@@ -330,10 +370,59 @@ def namespace_exists():
             NAMESPACE,
         ],
         allow_failure=True,
-        print_output=False,
     )
 
     return result.returncode == 0
+
+
+def get_persistent_volume_ids():
+    if not cluster_exists() or not namespace_exists():
+        return []
+
+    pvc_data = kubectl_json(
+        [
+            "get",
+            "pvc",
+            "-n",
+            NAMESPACE,
+        ],
+        allow_failure=True,
+    )
+
+    if not pvc_data:
+        return []
+
+    volume_ids = []
+
+    for pvc in pvc_data.get("items", []):
+        pv_name = pvc.get("spec", {}).get("volumeName")
+
+        if not pv_name:
+            continue
+
+        pv = kubectl_json(
+            [
+                "get",
+                "pv",
+                pv_name,
+            ],
+            allow_failure=True,
+        )
+
+        if not pv:
+            continue
+
+        csi = pv.get("spec", {}).get("csi", {})
+
+        if csi.get("driver") != AUTO_MODE_CSI_DRIVER:
+            continue
+
+        volume_id = csi.get("volumeHandle")
+
+        if volume_id:
+            volume_ids.append(volume_id)
+
+    return sorted(set(volume_ids))
 
 
 def wait_until(description, condition, timeout=300, interval=10):
@@ -349,57 +438,66 @@ def wait_until(description, condition, timeout=300, interval=10):
         time.sleep(interval)
 
     print(f"WARNING: Timed out waiting for {description}.")
+
     return False
 
 
 def delete_load_balancer_services():
-    if not namespace_exists():
-        return
-
     services = kubectl_json(
         [
             "get",
             "services",
-            "-n",
-            NAMESPACE,
-        ]
+            "--all-namespaces",
+        ],
+        allow_failure=True,
     )
 
+    if not services:
+        return
+
     for service in services.get("items", []):
-        if service.get("spec", {}).get("type") == "LoadBalancer":
-            name = service["metadata"]["name"]
+        if service.get("spec", {}).get("type") != "LoadBalancer":
+            continue
 
-            print(f"Deleting LoadBalancer Service: {name}")
+        namespace = service["metadata"]["namespace"]
+        name = service["metadata"]["name"]
 
-            run_kubectl(
-                [
-                    "delete",
-                    "service",
-                    name,
-                    "-n",
-                    NAMESPACE,
-                    "--ignore-not-found=true",
-                ]
-            )
+        print(
+            f"Deleting LoadBalancer Service: "
+            f"{namespace}/{name}"
+        )
+
+        run_kubectl(
+            [
+                "delete",
+                "service",
+                name,
+                "-n",
+                namespace,
+                "--ignore-not-found=true",
+            ],
+            allow_failure=True,
+        )
 
 
 def delete_ingresses():
-    if not namespace_exists():
-        return
-
     ingresses = kubectl_json(
         [
             "get",
             "ingress",
-            "-n",
-            NAMESPACE,
-        ]
+            "--all-namespaces",
+        ],
+        allow_failure=True,
     )
 
+    if not ingresses:
+        return
+
     for ingress in ingresses.get("items", []):
+        namespace = ingress["metadata"]["namespace"]
         name = ingress["metadata"]["name"]
 
-        print(f"Deleting Ingress: {name}")
+        print(f"Deleting Ingress: {namespace}/{name}")
 
         run_kubectl(
             [
@@ -407,9 +505,10 @@ def delete_ingresses():
                 "ingress",
                 name,
                 "-n",
-                NAMESPACE,
+                namespace,
                 "--ignore-not-found=true",
-            ]
+            ],
+            allow_failure=True,
         )
 
 
@@ -417,7 +516,7 @@ def delete_workloads():
     if not namespace_exists():
         return
 
-    print("Deleting application workloads...")
+    print("Deleting Pac-Man workloads...")
 
     run_kubectl(
         [
@@ -434,27 +533,11 @@ def delete_workloads():
     )
 
 
-def pvc_count():
-    if not namespace_exists():
-        return 0
-
-    data = kubectl_json(
-        [
-            "get",
-            "pvc",
-            "-n",
-            NAMESPACE,
-        ]
-    )
-
-    return len(data.get("items", []))
-
-
 def delete_pvcs():
     if not namespace_exists():
         return
 
-    print("Deleting PersistentVolumeClaims...")
+    print("Deleting Pac-Man PVCs...")
 
     run_kubectl(
         [
@@ -469,40 +552,63 @@ def delete_pvcs():
         allow_failure=True,
     )
 
-    wait_until(
-        "PVC deletion",
-        lambda: pvc_count() == 0,
-        timeout=300,
-        interval=10,
+
+def wait_for_persistent_volumes_to_delete(volume_ids):
+    if not volume_ids:
+        print(
+            "No Kubernetes persistent EBS volumes "
+            "need cleanup."
+        )
+
+        return True
+
+    print(
+        "Persistent EBS volumes captured "
+        "before PVC deletion:"
     )
 
+    for volume_id in volume_ids:
+        print(f"- {volume_id}")
 
-def delete_remaining_ebs_volumes():
-    volumes = get_cluster_ebs_volumes()
-
-    if not volumes:
+    if wait_until(
+        "persistent EBS volume deletion",
+        lambda: all(
+            not volume_exists(volume_id)
+            for volume_id in volume_ids
+        ),
+        timeout=300,
+        interval=10,
+    ):
         return True
 
     print()
-    print("EBS volumes still associated with the cluster:")
+    print(
+        "Persistent EBS volumes still present "
+        "after PVC deletion."
+    )
 
-    success = True
+    for volume_id in volume_ids:
+        volume = get_volume(volume_id)
 
-    for volume in volumes:
-        volume_id = volume["id"]
-        state = volume["state"]
+        if volume is None:
+            continue
+
+        state = volume["State"]
 
         print(f"- {volume_id} ({state})")
 
         if state != "available":
             print(
-                f"ERROR: {volume_id} is not available and "
-                "will not be force-deleted."
+                f"ERROR: {volume_id} is still {state}; "
+                "refusing to force-delete it."
             )
-            success = False
-            continue
 
-        print(f"Deleting orphaned EBS volume: {volume_id}")
+            return False
+
+        print(
+            f"Deleting orphaned persistent "
+            f"EBS volume: {volume_id}"
+        )
 
         run_aws(
             [
@@ -513,12 +619,12 @@ def delete_remaining_ebs_volumes():
             ]
         )
 
-    if not success:
-        return False
-
     return wait_until(
-        "EBS volume deletion",
-        lambda: len(get_cluster_ebs_volumes()) == 0,
+        "manual persistent EBS cleanup",
+        lambda: all(
+            not volume_exists(volume_id)
+            for volume_id in volume_ids
+        ),
         timeout=300,
         interval=10,
     )
@@ -527,53 +633,61 @@ def delete_remaining_ebs_volumes():
 def delete_remaining_load_balancers():
     load_balancers = get_cluster_load_balancers()
 
-    if load_balancers:
-        print()
-        print("Deleting remaining Auto Mode load balancers...")
+    if not load_balancers:
+        return True
 
-        for arn in load_balancers:
-            print(f"- {arn}")
+    print()
+    print(
+        "Cluster load balancers still exist "
+        "after Kubernetes deletion:"
+    )
 
-            run_aws(
-                [
-                    "elbv2",
-                    "delete-load-balancer",
-                    "--load-balancer-arn",
-                    arn,
-                ]
-            )
+    for arn in load_balancers:
+        print(f"- {arn}")
 
-        if not wait_until(
-            "load balancer deletion",
-            lambda: len(get_cluster_load_balancers()) == 0,
-            timeout=300,
-            interval=10,
-        ):
-            return False
+    print(
+        "Deleting remaining cluster-tagged "
+        "load balancers..."
+    )
 
-    target_groups = get_cluster_target_groups()
+    for arn in load_balancers:
+        run_aws(
+            [
+                "elbv2",
+                "delete-load-balancer",
+                "--load-balancer-arn",
+                arn,
+            ]
+        )
 
-    if target_groups:
-        print("Deleting remaining target groups...")
+    if not wait_until(
+        "load balancer deletion",
+        lambda: len(get_cluster_load_balancers()) == 0,
+        timeout=300,
+        interval=10,
+    ):
+        return False
 
-        for arn in target_groups:
-            print(f"- {arn}")
+    for arn in get_cluster_target_groups():
+        print(
+            f"Deleting remaining target group: {arn}"
+        )
 
-            run_aws(
-                [
-                    "elbv2",
-                    "delete-target-group",
-                    "--target-group-arn",
-                    arn,
-                ]
-            )
+        run_aws(
+            [
+                "elbv2",
+                "delete-target-group",
+                "--target-group-arn",
+                arn,
+            ],
+            allow_failure=True,
+        )
 
     return True
 
 
 def delete_namespace_and_storage_class():
     if namespace_exists():
-        print()
         print(f"Deleting namespace: {NAMESPACE}")
 
         run_kubectl(
@@ -603,7 +717,11 @@ def delete_namespace_and_storage_class():
 
 def kubernetes_cleanup():
     if not cluster_exists():
-        print("EKS cluster does not exist. Skipping Kubernetes cleanup.")
+        print(
+            "EKS cluster does not exist. "
+            "Skipping Kubernetes cleanup."
+        )
+
         return True
 
     check_tool("kubectl")
@@ -614,11 +732,13 @@ def kubernetes_cleanup():
     print()
     print("=== Kubernetes Cleanup ===")
 
+    persistent_volume_ids = get_persistent_volume_ids()
+
     delete_load_balancer_services()
     delete_ingresses()
 
     wait_until(
-        "Kubernetes-managed load balancer cleanup",
+        "Kubernetes load balancer cleanup",
         lambda: len(get_cluster_load_balancers()) == 0,
         timeout=300,
         interval=10,
@@ -631,16 +751,10 @@ def kubernetes_cleanup():
     delete_workloads()
     delete_pvcs()
 
-    wait_until(
-        "Kubernetes-managed EBS cleanup",
-        lambda: len(get_cluster_ebs_volumes()) == 0,
-        timeout=300,
-        interval=10,
-    )
-
-    if get_cluster_ebs_volumes():
-        if not delete_remaining_ebs_volumes():
-            return False
+    if not wait_for_persistent_volumes_to_delete(
+        persistent_volume_ids
+    ):
+        return False
 
     delete_namespace_and_storage_class()
 
@@ -651,45 +765,98 @@ def show_inventory(verbose=False):
     print()
     print("=== Terraform Destroy Preview ===")
 
-    exit_code = terraform_destroy_preview(verbose=verbose)
+    exit_code = terraform_destroy_preview(
+        verbose=verbose
+    )
 
     if exit_code == 0:
-        print("No Terraform-managed resources need destruction.")
+        print(
+            "No Terraform-managed resources "
+            "need destruction."
+        )
 
     elif exit_code == 2:
-        print("Terraform-managed resources would be destroyed.")
-        print("PREVIEW ONLY - nothing was deleted.")
+        print(
+            "Terraform-managed resources "
+            "would be destroyed."
+        )
+        print(
+            "PREVIEW ONLY - nothing was deleted."
+        )
 
     else:
-        print("ERROR: Terraform destroy preview failed.")
+        print(
+            "ERROR: Terraform destroy preview failed."
+        )
+
         sys.exit(1)
 
     print()
     print("=== AWS Runtime Inventory ===")
 
-    tagged = get_tagged_runtime_resources()
+    tagged = get_tagged_project_resources()
     auto_mode = get_auto_mode_resources()
-    volumes = get_cluster_ebs_volumes()
+    all_ebs = get_cluster_ebs_volumes()
+    persistent_ebs = get_persistent_volume_ids()
     load_balancers = get_cluster_load_balancers()
     clusters = get_eks_clusters()
 
-    print(f"Tagged project resources : {len(tagged)}")
-    print(f"Auto Mode resources      : {len(auto_mode)}")
-    print(f"EBS volumes              : {len(volumes)}")
-    print(f"Load balancers           : {len(load_balancers)}")
-    print(f"EKS clusters             : {len(clusters)}")
+    persistent_set = set(persistent_ebs)
 
-    if clusters:
-        for cluster in clusters:
-            print(f"  EKS: {cluster}")
+    other_ebs = [
+        volume
+        for volume in all_ebs
+        if volume["id"] not in persistent_set
+    ]
 
-    if volumes:
-        for volume in volumes:
-            print(f"  EBS: {volume['id']} ({volume['state']})")
+    print(
+        f"Tagged project resources : {len(tagged)}"
+    )
+    print(
+        f"Auto Mode resources      : {len(auto_mode)}"
+    )
+    print(
+        f"All cluster EBS volumes  : {len(all_ebs)}"
+    )
+    print(
+        f"Persistent workload EBS  : {len(persistent_ebs)}"
+    )
+    print(
+        f"Other cluster EBS        : {len(other_ebs)}"
+    )
+    print(
+        f"Load balancers           : {len(load_balancers)}"
+    )
+    print(
+        f"EKS clusters             : {len(clusters)}"
+    )
 
-    if load_balancers:
-        for arn in load_balancers:
-            print(f"  LB : {arn}")
+    for volume_id in persistent_ebs:
+        print(
+            f"  Persistent EBS: {volume_id}"
+        )
+
+    for volume in other_ebs:
+        print(
+            f"  Other EBS: {volume['id']} "
+            f"({volume['state']}, "
+            f"{volume['size']} GiB)"
+        )
+
+    for cluster in clusters:
+        print(f"  EKS: {cluster}")
+
+    for arn in load_balancers:
+        print(f"  LB : {arn}")
+
+
+def wait_for_cluster_ebs_cleanup():
+    return wait_until(
+        "Auto Mode node EBS cleanup",
+        lambda: len(get_cluster_ebs_volumes()) == 0,
+        timeout=600,
+        interval=15,
+    )
 
 
 def final_verification():
@@ -699,38 +866,49 @@ def final_verification():
     clusters = get_eks_clusters()
     volumes = get_cluster_ebs_volumes()
     load_balancers = get_cluster_load_balancers()
-    auto_mode = get_auto_mode_resources()
-    tagged = get_tagged_runtime_resources()
 
-    print(f"EKS clusters        : {len(clusters)}")
-    print(f"EBS volumes         : {len(volumes)}")
-    print(f"Load balancers      : {len(load_balancers)}")
-    print(f"Auto Mode resources : {len(auto_mode)}")
-    print(f"Tagged resources    : {len(tagged)}")
-
-    billable_leftovers = bool(
-        clusters
-        or volumes
-        or load_balancers
+    print(
+        f"EKS clusters   : {len(clusters)}"
+    )
+    print(
+        f"EBS volumes    : {len(volumes)}"
+    )
+    print(
+        f"Load balancers : {len(load_balancers)}"
     )
 
-    if billable_leftovers:
+    if clusters or volumes or load_balancers:
         print()
-        print("ERROR: Potential billable resources still remain.")
+        print(
+            "ERROR: Potential billable resources "
+            "still remain."
+        )
 
         for cluster in clusters:
-            print(f"- EKS cluster: {cluster}")
+            print(
+                f"- EKS cluster: {cluster}"
+            )
 
         for volume in volumes:
-            print(f"- EBS volume: {volume['id']} ({volume['state']})")
+            print(
+                f"- EBS volume: {volume['id']} "
+                f"({volume['state']}, "
+                f"{volume['size']} GiB)"
+            )
 
         for arn in load_balancers:
-            print(f"- Load balancer: {arn}")
+            print(
+                f"- Load balancer: {arn}"
+            )
 
         return False
 
     print()
-    print("No EKS cluster, EBS volume, or load balancer remains.")
+    print(
+        "No EKS cluster, EBS volume, "
+        "or load balancer remains."
+    )
+
     return True
 
 
@@ -739,7 +917,10 @@ def confirm_destroy(skip_confirmation):
         return True
 
     print()
-    print("WARNING: --destroy will remove the Pac-Man AWS environment.")
+    print(
+        "WARNING: --destroy will remove "
+        "the Pac-Man AWS environment."
+    )
     print(f"Cluster : {CLUSTER_NAME}")
     print(f"Account : {EXPECTED_ACCOUNT_ID}")
     print(f"Region  : {AWS_REGION}")
@@ -754,25 +935,35 @@ def confirm_destroy(skip_confirmation):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Pac-Man AWS teardown and safety verification."
+        description=(
+            "Pac-Man AWS teardown "
+            "and safety verification."
+        )
     )
 
     parser.add_argument(
         "--destroy",
         action="store_true",
-        help="Actually delete Kubernetes and Terraform resources.",
+        help=(
+            "Actually delete Kubernetes "
+            "and Terraform resources."
+        ),
     )
 
     parser.add_argument(
         "--yes",
         action="store_true",
-        help="Skip interactive destroy confirmation.",
+        help=(
+            "Skip interactive destroy confirmation."
+        ),
     )
 
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="Show the full Terraform destroy plan.",
+        help=(
+            "Show the full Terraform destroy plan."
+        ),
     )
 
     return parser.parse_args()
@@ -797,14 +988,20 @@ def main():
 
     if account_id != EXPECTED_ACCOUNT_ID:
         print()
-        print("ERROR: AWS account does not match the project account.")
+        print(
+            "ERROR: AWS account does not match "
+            "the project account."
+        )
         print("No actions were performed.")
+
         sys.exit(1)
 
     print()
     print("AWS account verification passed.")
 
-    show_inventory(verbose=args.verbose)
+    show_inventory(
+        verbose=args.verbose
+    )
 
     if not args.destroy:
         print()
@@ -812,44 +1009,45 @@ def main():
         print("No AWS resources were deleted.")
         print()
         print("To perform teardown:")
-        print("python3 scripts/terminate.py --destroy")
+        print(
+            "python3 scripts/terminate.py --destroy"
+        )
+
         return
 
     if not confirm_destroy(args.yes):
         print()
         print("Destroy cancelled.")
         print("No resources were deleted.")
+
         return
 
     if not kubernetes_cleanup():
         print()
-        print("ERROR: Kubernetes cleanup did not complete safely.")
-        print("Terraform destroy was NOT started.")
-        sys.exit(1)
+        print(
+            "ERROR: Kubernetes cleanup "
+            "did not complete safely."
+        )
+        print(
+            "Terraform destroy was NOT started."
+        )
 
-    # One final fallback before deleting the cluster.
-    if not delete_remaining_load_balancers():
-        print("ERROR: Load balancer cleanup failed.")
-        sys.exit(1)
-
-    if not delete_remaining_ebs_volumes():
-        print("ERROR: EBS cleanup failed.")
         sys.exit(1)
 
     if not terraform_destroy():
         print()
-        print("Remaining Auto Mode resources:")
-
-        for arn in get_auto_mode_resources():
-            print(f"- {arn}")
+        print(
+            "ERROR: Terraform destroy "
+            "did not complete."
+        )
+        print(
+            "Run the script without --destroy "
+            "to inspect leftovers."
+        )
 
         sys.exit(1)
 
-    # A persistent EBS volume is the important Auto Mode exception.
-    # Re-check once more after cluster deletion.
-    if get_cluster_ebs_volumes():
-        if not delete_remaining_ebs_volumes():
-            sys.exit(1)
+    wait_for_cluster_ebs_cleanup()
 
     if not final_verification():
         sys.exit(1)
