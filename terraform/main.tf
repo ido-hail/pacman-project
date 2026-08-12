@@ -9,3 +9,18 @@ module "network" {
     "us-east-1b" = "10.0.2.0/24"
   }
 }
+
+module "ecr" {
+  source = "./modules/ecr"
+
+  repository_name = "${var.project_name}-${var.environment}-app"
+}
+
+module "github_oidc" {
+  source = "./modules/github_oidc"
+
+  role_name          = "${var.project_name}-${var.environment}-github-actions"
+  github_repository  = "ido-hail/pacman-project"
+  github_branch      = "main"
+  ecr_repository_arn = module.ecr.repository_arn
+}

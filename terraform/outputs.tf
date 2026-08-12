@@ -7,3 +7,13 @@ output "public_subnet_ids" {
   description = "Pac-Man public subnet IDs"
   value       = module.network.public_subnet_ids
 }
+
+output "ecr_repository_url" {
+  description = "Pac-Man ECR repository URL"
+  value       = module.ecr.repository_url
+}
+
+output "github_actions_role_arn" {
+  description = "IAM role ARN used by GitHub Actions"
+  value       = module.github_oidc.role_arn
+}
