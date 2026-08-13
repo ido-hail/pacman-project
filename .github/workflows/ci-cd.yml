@@ -1,6 +1,9 @@
 name: Pac-Man CI/CD
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       deploy:
@@ -77,14 +80,14 @@ jobs:
           exit-code: "0"
 
       - name: Save scanned image
-        if: ${{ inputs.deploy == true && github.ref == 'refs/heads/main' }}
+        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.deploy == true) }}
         run: |
           docker save \
             pacman-ci:${IMAGE_TAG} \
             -o /tmp/pacman-image.tar
 
       - name: Upload scanned image artifact
-        if: ${{ inputs.deploy == true && github.ref == 'refs/heads/main' }}
+        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.deploy == true) }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pacman-image-${{ github.sha }}
@@ -96,7 +99,7 @@ jobs:
     name: Push and Deploy
     needs: build-and-scan
 
-    if: ${{ inputs.deploy == true && github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.deploy == true) }}
 
     runs-on: ubuntu-latest
 
