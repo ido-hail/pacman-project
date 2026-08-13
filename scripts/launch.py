@@ -19,6 +19,17 @@ STATE_BUCKET = (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TERRAFORM_DIR = PROJECT_ROOT / "terraform"
 K8S_DIR = PROJECT_ROOT / "k8s"
+MONITORING_VALUES = (
+    PROJECT_ROOT
+    / "monitoring"
+    / "kube-prometheus-values.yaml"
+)
+CI_WORKFLOW = (
+    PROJECT_ROOT
+    / ".github"
+    / "workflows"
+    / "ci-cd.yml"
+)
 
 REQUIRED_K8S_FILES = [
     "namespace.yaml",
@@ -93,12 +104,31 @@ RUNTIME_PHASES = [
         ],
     ),
     (
-        "8. Final runtime verification",
+        "8. CI/CD verification",
+        [
+            "Enable final push-to-main deployment trigger",
+            "Run GitHub Actions through OIDC",
+            "Push immutable Git SHA image to ECR",
+            "Verify Pac-Man rollout from GitHub Actions",
+        ],
+    ),
+    (
+        "9. Monitoring",
+        [
+            "Install pinned kube-prometheus-stack Helm chart",
+            "Verify Prometheus and Grafana workloads",
+            "Access Grafana through kubectl port-forward",
+            "Capture monitoring evidence",
+        ],
+    ),
+    (
+        "10. Final runtime verification",
         [
             "Verify pods and services",
             "Verify persistent storage",
             "Verify NLB",
-            "Collect evidence for documentation",
+            "Verify monitoring",
+            "Collect final evidence",
         ],
     ),
 ]
@@ -175,6 +205,8 @@ def verify_project_files():
         TERRAFORM_DIR / "main.tf",
         TERRAFORM_DIR / "versions.tf",
         PROJECT_ROOT / "scripts" / "terminate.py",
+        CI_WORKFLOW,
+        MONITORING_VALUES,
     ]
 
     required_paths.extend(
@@ -579,8 +611,8 @@ def main():
     )
     print(
         "No terraform apply, ECR push, "
-        "kubectl apply, or NLB creation "
-        "is implemented."
+        "kubectl apply, Helm install, "
+        "or NLB creation is implemented."
     )
     print()
 
@@ -590,6 +622,7 @@ def main():
         "git",
         "docker",
         "kubectl",
+        "helm",
     ):
         path = check_tool(tool)
         print(f"{tool}: {path}")

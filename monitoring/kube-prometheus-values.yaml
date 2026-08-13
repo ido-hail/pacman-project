@@ -1,0 +1,93 @@
+# Lightweight monitoring configuration for the Pac-Man lab.
+# Chart: prometheus-community/kube-prometheus-stack
+# Pinned version: 87.21.0
+#
+# Goal:
+# - Prometheus + Grafana demonstration
+# - Kubernetes / node metrics
+# - Minimal temporary resource footprint
+# - No persistent monitoring storage
+# - No public monitoring endpoints
+
+alertmanager:
+  enabled: false
+
+defaultRules:
+  create: false
+
+grafana:
+  enabled: true
+
+  persistence:
+    enabled: false
+
+  service:
+    type: ClusterIP
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+prometheus:
+  enabled: true
+
+  service:
+    type: ClusterIP
+
+  prometheusSpec:
+    replicas: 1
+    retention: 2h
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+    storageSpec:
+      emptyDir: {}
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 150m
+      memory: 128Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+# EKS manages these control-plane components.
+# We do not need direct scraping of them for the course demo.
+
+kubeEtcd:
+  enabled: false
+
+kubeControllerManager:
+  enabled: false
+
+kubeScheduler:
+  enabled: false
