@@ -25,7 +25,10 @@ data "aws_iam_policy_document" "github_assume_role" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:aud"
-      values   = ["sts.amazonaws.com"]
+
+      values = [
+        "sts.amazonaws.com"
+      ]
     }
 
     condition {
@@ -33,7 +36,7 @@ data "aws_iam_policy_document" "github_assume_role" {
       variable = "token.actions.githubusercontent.com:sub"
 
       values = [
-        "repo:${var.github_repository}:ref:refs/heads/${var.github_branch}"
+        "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repository_name}@${var.github_repository_id}:ref:refs/heads/${var.github_branch}"
       ]
     }
   }
@@ -44,7 +47,7 @@ resource "aws_iam_role" "github_actions" {
   assume_role_policy = data.aws_iam_policy_document.github_assume_role.json
 }
 
-data "aws_iam_policy_document" "ecr_push" {
+data "aws_iam_policy_document" "ci_cd" {
   statement {
     sid    = "ECRAuthorization"
     effect = "Allow"
@@ -73,10 +76,23 @@ data "aws_iam_policy_document" "ecr_push" {
       var.ecr_repository_arn
     ]
   }
+
+  statement {
+    sid    = "DescribePacmanCluster"
+    effect = "Allow"
+
+    actions = [
+      "eks:DescribeCluster"
+    ]
+
+    resources = [
+      var.eks_cluster_arn
+    ]
+  }
 }
 
-resource "aws_iam_role_policy" "ecr_push" {
-  name   = "pacman-ecr-push"
+resource "aws_iam_role_policy" "ci_cd" {
+  name   = "pacman-ci-cd"
   role   = aws_iam_role.github_actions.id
-  policy = data.aws_iam_policy_document.ecr_push.json
+  policy = data.aws_iam_policy_document.ci_cd.json
 }

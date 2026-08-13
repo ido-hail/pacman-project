@@ -16,15 +16,6 @@ module "ecr" {
   repository_name = "${var.project_name}-${var.environment}-app"
 }
 
-module "github_oidc" {
-  source = "./modules/github_oidc"
-
-  role_name          = "${var.project_name}-${var.environment}-github-actions"
-  github_repository  = "ido-hail/pacman-project"
-  github_branch      = "main"
-  ecr_repository_arn = module.ecr.repository_arn
-}
-
 module "eks" {
   source = "./modules/eks"
 
@@ -37,4 +28,44 @@ module "eks" {
 
   cluster_role_name = "${var.project_name}-${var.environment}-eks-cluster-role"
   node_role_name    = "${var.project_name}-${var.environment}-eks-node-role"
+}
+
+module "github_oidc" {
+  source = "./modules/github_oidc"
+
+  role_name = "${var.project_name}-${var.environment}-github-actions"
+
+  github_owner           = "ido-hail"
+  github_owner_id        = "262130795"
+  github_repository_name = "pacman-project"
+  github_repository_id   = "1320072907"
+  github_branch          = "main"
+
+  ecr_repository_arn = module.ecr.repository_arn
+  eks_cluster_arn    = module.eks.cluster_arn
+}
+
+resource "aws_eks_access_entry" "github_actions" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = module.github_oidc.role_arn
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "github_actions_pacman_admin" {
+  cluster_name  = module.eks.cluster_name
+  principal_arn = module.github_oidc.role_arn
+
+  policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSAdminPolicy"
+
+  access_scope {
+    type = "namespace"
+
+    namespaces = [
+      "pacman"
+    ]
+  }
+
+  depends_on = [
+    aws_eks_access_entry.github_actions
+  ]
 }
