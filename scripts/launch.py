@@ -10,6 +10,7 @@ from pathlib import Path
 EXPECTED_ACCOUNT_ID = "506456084249"
 AWS_REGION = "us-east-1"
 CLUSTER_NAME = "pacman-dev"
+NAMESPACE = "pacman"
 
 STATE_BUCKET = (
     "pacman-terraform-state-506456084249-us-east-1"
@@ -17,17 +18,102 @@ STATE_BUCKET = (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TERRAFORM_DIR = PROJECT_ROOT / "terraform"
+K8S_DIR = PROJECT_ROOT / "k8s"
+
+REQUIRED_K8S_FILES = [
+    "namespace.yaml",
+    "storage-class.yaml",
+    "mongo-service.yaml",
+    "mongo-statefulset.yaml",
+    "app-configmap.yaml",
+    "app-deployment.yaml",
+    "app-service.yaml",
+]
+
+RUNTIME_PHASES = [
+    (
+        "1. Terraform infrastructure",
+        [
+            "Create VPC and public subnets",
+            "Create ECR repository",
+            "Create GitHub OIDC IAM resources",
+            "Create EKS Auto Mode cluster",
+            "Create scoped GitHub Actions EKS access",
+        ],
+    ),
+    (
+        "2. Kubernetes access",
+        [
+            "Wait for EKS cluster to become ACTIVE",
+            "Update local kubeconfig",
+            "Verify Kubernetes API connectivity",
+        ],
+    ),
+    (
+        "3. Application image",
+        [
+            "Build linux/amd64 Pac-Man image",
+            "Tag image with immutable Git commit SHA",
+            "Authenticate to ECR",
+            "Push image to ECR",
+        ],
+    ),
+    (
+        "4. Kubernetes base",
+        [
+            "Create pacman namespace",
+            "Create gp3 Auto Mode StorageClass",
+        ],
+    ),
+    (
+        "5. MongoDB",
+        [
+            "Create MongoDB headless Service",
+            "Create MongoDB StatefulSet",
+            "Wait for MongoDB readiness",
+            "Verify PVC and EBS volume",
+        ],
+    ),
+    (
+        "6. Pac-Man",
+        [
+            "Create Pac-Man ConfigMap",
+            "Create Pac-Man Deployment",
+            "Wait for rollout",
+            "Verify Pac-Man connects to MongoDB",
+            "Verify HTTP response internally",
+        ],
+    ),
+    (
+        "7. Public NLB",
+        [
+            "Create Pac-Man LoadBalancer Service",
+            "Wait for NLB hostname",
+            "Verify external HTTP response",
+        ],
+    ),
+    (
+        "8. Final runtime verification",
+        [
+            "Verify pods and services",
+            "Verify persistent storage",
+            "Verify NLB",
+            "Collect evidence for documentation",
+        ],
+    ),
+]
+
+
+def fail(message):
+    print(f"ERROR: {message}")
+    sys.exit(1)
 
 
 def check_tool(name):
     path = shutil.which(name)
 
     if path is None:
-        print(
-            f"ERROR: Required tool '{name}' "
-            "was not found."
-        )
-        sys.exit(1)
+        fail(f"Required tool '{name}' was not found.")
 
     return path
 
@@ -41,7 +127,7 @@ def run(command, allow_failure=False):
 
     if result.returncode != 0 and not allow_failure:
         print(
-            f"ERROR: Command failed: "
+            "ERROR: Command failed: "
             f"{' '.join(command)}"
         )
 
@@ -78,6 +164,47 @@ def aws_json(args, allow_failure=False):
     return json.loads(output) if output else {}
 
 
+def verify_project_files():
+    print()
+    print("=== Project File Check ===")
+
+    required_paths = [
+        PROJECT_ROOT / "Dockerfile",
+        PROJECT_ROOT / "package.json",
+        PROJECT_ROOT / "package-lock.json",
+        TERRAFORM_DIR / "main.tf",
+        TERRAFORM_DIR / "versions.tf",
+        PROJECT_ROOT / "scripts" / "terminate.py",
+    ]
+
+    required_paths.extend(
+        K8S_DIR / filename
+        for filename in REQUIRED_K8S_FILES
+    )
+
+    missing = [
+        path
+        for path in required_paths
+        if not path.exists()
+    ]
+
+    if missing:
+        print("Missing required project files:")
+
+        for path in missing:
+            print(
+                f"- {path.relative_to(PROJECT_ROOT)}"
+            )
+
+        sys.exit(1)
+
+    print(
+        f"Required project files: "
+        f"{len(required_paths)}"
+    )
+    print("Project file check passed.")
+
+
 def verify_aws_identity():
     result = run(
         [
@@ -100,13 +227,10 @@ def verify_aws_identity():
     print(f"AWS region  : {AWS_REGION}")
 
     if account_id != EXPECTED_ACCOUNT_ID:
-        print()
-        print(
-            "ERROR: AWS account does not match "
+        fail(
+            "AWS account does not match "
             "the Pac-Man project account."
         )
-
-        sys.exit(1)
 
     print("AWS account verification passed.")
 
@@ -124,13 +248,10 @@ def verify_state_bucket():
     )
 
     if result.returncode != 0:
-        print(
-            "ERROR: Terraform state bucket "
-            "was not found or is inaccessible."
+        fail(
+            "Terraform state bucket was not "
+            f"found or is inaccessible: {STATE_BUCKET}"
         )
-        print(f"Bucket: {STATE_BUCKET}")
-
-        sys.exit(1)
 
     print(
         f"Terraform state bucket: {STATE_BUCKET}"
@@ -175,7 +296,10 @@ def get_project_instances():
 
     instances = []
 
-    for reservation in data.get("Reservations", []):
+    for reservation in data.get(
+        "Reservations",
+        [],
+    ):
         instances.extend(
             reservation.get("Instances", [])
         )
@@ -219,8 +343,8 @@ def verify_runtime_is_off():
             "already exist."
         )
         print(
-            "This preview script will not "
-            "modify them."
+            "COST-SAFE preview refuses to "
+            "continue against an active runtime."
         )
 
         sys.exit(1)
@@ -247,10 +371,15 @@ def terraform_init():
     )
 
     for line in result.stdout.splitlines():
-        if "successfully initialized" in line.lower():
+        if (
+            "successfully initialized"
+            in line.lower()
+        ):
             print(line.strip())
 
-    print("Terraform initialization passed.")
+    print(
+        "Terraform initialization passed."
+    )
 
 
 def terraform_fmt_check():
@@ -269,23 +398,19 @@ def terraform_fmt_check():
     )
 
     if result.returncode != 0:
-        print(
-            "ERROR: Terraform formatting check failed."
-        )
-
         if result.stdout.strip():
             print(result.stdout.strip())
 
         print()
-        print(
-            "Run:"
-        )
+        print("Run:")
         print(
             "terraform -chdir=terraform "
             "fmt -recursive"
         )
 
-        sys.exit(1)
+        fail(
+            "Terraform formatting check failed."
+        )
 
     print("Terraform formatting passed.")
 
@@ -329,7 +454,7 @@ def terraform_state_check():
     ]
 
     print(
-        f"Resources currently in root state: "
+        "Resources currently in root state: "
         f"{len(resources)}"
     )
 
@@ -423,6 +548,28 @@ def git_status():
         print("Git working tree is clean.")
 
 
+def show_runtime_plan():
+    print()
+    print("=== Future Runtime Launch Plan ===")
+    print()
+    print(
+        "The following phases are documented "
+        "only. None are executed in COST-SAFE MODE."
+    )
+
+    for title, steps in RUNTIME_PHASES:
+        print()
+        print(title)
+
+        for step in steps:
+            print(f"  - {step}")
+
+    print()
+    print(
+        "Runtime execution remains disabled."
+    )
+
+
 def main():
     print("=== Pac-Man Safe Launch Preview ===")
     print()
@@ -431,8 +578,9 @@ def main():
         "create AWS infrastructure."
     )
     print(
-        "No terraform apply or Kubernetes "
-        "deployment is implemented."
+        "No terraform apply, ECR push, "
+        "kubectl apply, or NLB creation "
+        "is implemented."
     )
     print()
 
@@ -440,14 +588,18 @@ def main():
         "aws",
         "terraform",
         "git",
+        "docker",
+        "kubectl",
     ):
         path = check_tool(tool)
         print(f"{tool}: {path}")
 
-    print()
+    verify_project_files()
 
+    print()
     verify_aws_identity()
     verify_state_bucket()
+
     verify_runtime_is_off()
 
     terraform_init()
@@ -456,6 +608,7 @@ def main():
     terraform_state_check()
     terraform_plan()
 
+    show_runtime_plan()
     git_status()
 
     print()
