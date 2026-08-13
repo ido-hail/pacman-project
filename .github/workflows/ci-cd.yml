@@ -1,0 +1,172 @@
+name: Pac-Man CI/CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Push scanned image to ECR and deploy to EKS"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: "506456084249"
+  ECR_REPOSITORY: pacman-dev-app
+  EKS_CLUSTER_NAME: pacman-dev
+  K8S_NAMESPACE: pacman
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build-and-scan:
+    name: Build and Security Scan
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install production dependencies
+        run: npm ci --omit=dev
+
+      - name: Audit production dependencies
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            -t pacman-ci:${IMAGE_TAG} \
+            .
+
+      - name: Verify container runs as non-root
+        run: |
+          USER_ID=$(docker run \
+            --rm \
+            --entrypoint id \
+            pacman-ci:${IMAGE_TAG} \
+            -u)
+
+          echo "Container UID: ${USER_ID}"
+
+          if [ "${USER_ID}" = "0" ]; then
+            echo "ERROR: Container is running as root."
+            exit 1
+          fi
+
+      - name: Scan Docker image with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: pacman-ci:${{ env.IMAGE_TAG }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Save scanned image
+        if: ${{ inputs.deploy == true && github.ref == 'refs/heads/main' }}
+        run: |
+          docker save \
+            pacman-ci:${IMAGE_TAG} \
+            -o /tmp/pacman-image.tar
+
+      - name: Upload scanned image artifact
+        if: ${{ inputs.deploy == true && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pacman-image-${{ github.sha }}
+          path: /tmp/pacman-image.tar
+          retention-days: 1
+          compression-level: 0
+
+  deploy:
+    name: Push and Deploy
+    needs: build-and-scan
+
+    if: ${{ inputs.deploy == true && github.ref == 'refs/heads/main' }}
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::506456084249:role/pacman-dev-github-actions
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
+
+      - name: Download scanned image artifact
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: pacman-image-${{ github.sha }}
+          path: /tmp/pacman-image
+
+      - name: Load scanned Docker image
+        run: |
+          docker load \
+            -i /tmp/pacman-image/pacman-image.tar
+
+      - name: Push immutable image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+
+          docker tag \
+            pacman-ci:${IMAGE_TAG} \
+            "${IMAGE_URI}"
+
+          docker push "${IMAGE_URI}"
+
+          echo "IMAGE_URI=${IMAGE_URI}" >> "${GITHUB_ENV}"
+
+      - name: Set up kubectl
+        uses: Azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+        with:
+          version: "v1.34.1"
+
+      - name: Configure EKS kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region "${AWS_REGION}" \
+            --name "${EKS_CLUSTER_NAME}"
+
+      - name: Verify Pac-Man deployment exists
+        run: |
+          kubectl get deployment pacman \
+            --namespace "${K8S_NAMESPACE}"
+
+      - name: Deploy scanned image
+        run: |
+          kubectl set image \
+            deployment/pacman \
+            pacman="${IMAGE_URI}" \
+            --namespace "${K8S_NAMESPACE}"
+
+      - name: Verify rollout
+        run: |
+          kubectl rollout status \
+            deployment/pacman \
+            --namespace "${K8S_NAMESPACE}" \
+            --timeout=180s
