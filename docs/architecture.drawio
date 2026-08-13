@@ -1,0 +1,132 @@
+<mxfile host="app.diagrams.net" agent="ChatGPT" compressed="false">
+  <diagram id="pacman-architecture" name="Pac-Man Architecture">
+    <mxGraphModel dx="1548" dy="1014" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" parent="1" style="text;html=1;align=center;verticalAlign=middle;fontSize=24;fontStyle=1;" value="Pac-Man DevSecOps Architecture — AWS EKS Auto Mode&lt;br&gt;Built by Ido Hail" vertex="1">
+          <mxGeometry height="40" width="880" x="360" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="internet" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fontStyle=1;" value="Internet User" vertex="1">
+          <mxGeometry height="60" width="150" x="30" y="320" as="geometry" />
+        </mxCell>
+        <mxCell id="aws" parent="1" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;verticalAlign=top;align=left;spacingTop=10;spacingLeft=10;fontStyle=1;fontSize=15;" value="AWS — us-east-1" vertex="1">
+          <mxGeometry height="710" width="930" x="220" y="90" as="geometry" />
+        </mxCell>
+        <mxCell id="vpc" parent="1" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;verticalAlign=top;align=left;spacingTop=10;spacingLeft=10;fontStyle=1;" value="VPC 10.0.0.0/16" vertex="1">
+          <mxGeometry height="560" width="650" x="260" y="160" as="geometry" />
+        </mxCell>
+        <mxCell id="subnet-a" parent="1" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;verticalAlign=top;align=center;spacingTop=12;fontStyle=1;" value="Public Subnet — us-east-1a&#xa;10.0.1.0/24" vertex="1">
+          <mxGeometry height="455" width="280" x="290" y="215" as="geometry" />
+        </mxCell>
+        <mxCell id="subnet-b" parent="1" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;verticalAlign=top;align=center;spacingTop=12;fontStyle=1;" value="Public Subnet — us-east-1b&#xa;10.0.2.0/24" vertex="1">
+          <mxGeometry height="455" width="280" x="600" y="215" as="geometry" />
+        </mxCell>
+        <mxCell id="nlb" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fontStyle=1;" value="AWS Network Load Balancer&#xa;Internet-facing — HTTP :80" vertex="1">
+          <mxGeometry height="65" width="470" x="350" y="285" as="geometry" />
+        </mxCell>
+        <mxCell id="eks" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fontStyle=1;" value="Amazon EKS Auto Mode&#xa;Cluster + Managed Compute&#xa;Kubernetes 1.34" vertex="1">
+          <mxGeometry height="78" width="340" x="395" y="405" as="geometry" />
+        </mxCell>
+        <mxCell id="pacman" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;" value="Pac-Man Deployment&#xa;Node.js 22&#xa;Port 8080&#xa;Non-root UID/GID 1000" vertex="1">
+          <mxGeometry height="100" width="210" x="320" y="525" as="geometry" />
+        </mxCell>
+        <mxCell id="mongo" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;" value="MongoDB StatefulSet&#xa;mongo:3.4.24&#xa;Service mongo:27017" vertex="1">
+          <mxGeometry height="100" width="210" x="640" y="525" as="geometry" />
+        </mxCell>
+        <mxCell id="monitoring" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;" value="kube-prometheus-stack&#xa;Prometheus + Grafana&#xa;kube-state-metrics + node-exporter" vertex="1">
+          <mxGeometry height="80" width="250" x="320" y="650" as="geometry" />
+        </mxCell>
+        <mxCell id="ebs" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;" value="Encrypted gp3 EBS&#xa;1 GiB PVC / PV" vertex="1">
+          <mxGeometry height="60" width="190" x="650" y="650" as="geometry" />
+        </mxCell>
+        <mxCell id="ecr" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;" value="Amazon ECR&#xa;pacman-dev-app&#xa;Immutable Git SHA tags" vertex="1">
+          <mxGeometry height="85" width="165" x="955" y="185" as="geometry" />
+        </mxCell>
+        <mxCell id="iam" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;" value="AWS IAM&#xa;GitHub OIDC Role&#xa;Namespace-scoped EKS access" vertex="1">
+          <mxGeometry height="105" width="165" x="955" y="335" as="geometry" />
+        </mxCell>
+        <mxCell id="s3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;" value="Amazon S3&#xa;Terraform Remote State&#xa;Encrypted + Versioned" vertex="1">
+          <mxGeometry height="85" width="165" x="955" y="535" as="geometry" />
+        </mxCell>
+        <mxCell id="github" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fontStyle=1;" value="GitHub Repository&#xa;main branch" vertex="1">
+          <mxGeometry height="70" width="170" x="1240" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="actions" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fontStyle=1;" value="GitHub Actions&#xa;Build → Scan → Deploy" vertex="1">
+          <mxGeometry height="80" width="170" x="1240" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="terraform" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fontStyle=1;" value="Terraform&#xa;Infrastructure as Code" vertex="1">
+          <mxGeometry height="75" width="170" x="1240" y="535" as="geometry" />
+        </mxCell>
+        <mxCell id="local" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;" value="Local Admin&#xa;kubectl / Helm&#xa;Grafana port-forward" vertex="1">
+          <mxGeometry height="90" width="180" x="30" y="735" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-user-nlb" edge="1" parent="1" source="internet" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="nlb">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-nlb-pacman" edge="1" parent="1" source="nlb" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=default;" target="pacman" value="HTTP :80 → :8080">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="335" y="385" />
+              <mxPoint x="335" y="500" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge-pacman-mongo" edge="1" parent="1" source="pacman" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=default;" target="mongo" value="MongoDB connection">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-mongo-ebs" edge="1" parent="1" source="mongo" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=default;" target="ebs" value="PVC">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-eks-monitoring" edge="1" parent="1" source="eks" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=default;" target="monitoring" value="metrics">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="585" y="500" />
+              <mxPoint x="585" y="690" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge-local-monitoring" edge="1" parent="1" source="local" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=default;" target="monitoring" value="port-forward">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-github-actions" edge="1" parent="1" source="github" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" target="actions">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-actions-iam" edge="1" parent="1" source="actions" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=default;" target="iam" value="OIDC / STS">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-actions-ecr" edge="1" parent="1" source="actions" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=default;" target="ecr" value="push SHA image">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1185" y="340" />
+              <mxPoint x="1185" y="228" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge-actions-eks" edge="1" parent="1" source="actions" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=default;" target="eks" value="kubectl rollout">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1185" y="470" />
+              <mxPoint x="760" y="470" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge-terraform-aws" edge="1" parent="1" source="terraform" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=default;" target="aws" value="provision">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-terraform-s3" edge="1" parent="1" source="terraform" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=default;" target="s3" value="remote state">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-ecr-eks" edge="1" parent="1" source="ecr" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;labelBackgroundColor=default;" target="eks" value="pull image">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="925" y="228" />
+              <mxPoint x="925" y="445" />
+              <mxPoint x="760" y="445" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
