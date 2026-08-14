@@ -675,8 +675,9 @@ def build_and_push_image(ecr_repository_url, git_sha):
     print()
     print("=== Docker Build and ECR Push ===")
 
-    local_image = f"pacman-launch:{git_sha}"
-    image_uri = f"{ecr_repository_url}:{git_sha}"
+    bootstrap_tag = f"bootstrap-{git_sha}"
+    local_image = f"pacman-launch:{bootstrap_tag}"
+    image_uri = f"{ecr_repository_url}:{bootstrap_tag}"
 
     run(
         [

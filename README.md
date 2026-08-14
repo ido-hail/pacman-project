@@ -262,7 +262,7 @@ Docker linux/amd64 build
     |
 non-root image verification
     |
-ECR login + immutable Git SHA push
+ECR login + immutable bootstrap Git SHA push
     |
 namespace + StorageClass
     |
@@ -282,6 +282,8 @@ final runtime summary
 ```
 
 If any normal required deployment step fails, the launch exits with an error so the failure is visible rather than silently ignored.
+
+The local launcher uses an immutable `bootstrap-<git-sha>` ECR tag. GitHub Actions reserves the plain `<git-sha>` tag for the image built and security-scanned by CI. This prevents collisions with ECR tag immutability while keeping the CI image promotion path reproducible.
 
 ## Network Load Balancer
 
