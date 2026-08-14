@@ -4,7 +4,13 @@ metadata:
   name: pacman
   namespace: pacman
 spec:
-  replicas: 1
+  replicas: 2
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
 
   selector:
     matchLabels:
@@ -17,7 +23,7 @@ spec:
     spec:
       containers:
         - name: pacman
-          image: 506456084249.dkr.ecr.us-east-1.amazonaws.com/pacman-dev-app:bbe6ac3
+          image: PACMAN_IMAGE_PLACEHOLDER
           imagePullPolicy: IfNotPresent
 
           ports:
@@ -51,3 +57,11 @@ spec:
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 5
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
