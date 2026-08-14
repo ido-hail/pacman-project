@@ -1,57 +1,64 @@
 # Pac-Man on AWS EKS Auto Mode
 
-DevSecOps final project deploying a containerized Pac-Man application with MongoDB on Amazon EKS Auto Mode.
+DevSecOps final project that deploys a containerized Pac-Man application and MongoDB to Amazon EKS Auto Mode.
 
-The project demonstrates Infrastructure as Code, Kubernetes, CI/CD, persistent storage, monitoring, security scanning, and safe environment teardown.
-
-## Project Goals
-
-The final environment demonstrates:
-
-- Terraform-based AWS provisioning
-- Amazon EKS Auto Mode
-- Docker containerization
-- Amazon ECR
-- MongoDB StatefulSet with persistent storage
-- AWS Network Load Balancer
-- GitHub Actions CI/CD
-- GitHub OIDC authentication to AWS
-- Trivy and npm security scanning
-- Prometheus and Grafana monitoring
-- automated and verified teardown
+The project focuses on a reproducible AWS/Kubernetes architecture, automated launch and teardown, CI/CD, persistent storage, monitoring and practical security controls.
 
 ## Architecture
 
-The environment is deployed in `us-east-1` and includes:
+The environment runs in `us-east-1` and contains:
 
-- one VPC
-- two public subnets across two Availability Zones
+- Terraform-managed VPC and two public subnets across two Availability Zones
 - Amazon EKS Auto Mode
 - Amazon ECR
-- AWS Network Load Balancer
-- Pac-Man Deployment
+- Pac-Man Kubernetes Deployment
 - MongoDB StatefulSet
-- encrypted gp3 persistent storage
-- GitHub Actions using AWS OIDC
+- encrypted `gp3` EBS persistent storage
+- internet-facing AWS Network Load Balancer through EKS Auto Mode
+- GitHub Actions CI/CD using AWS OIDC
 - Prometheus and Grafana using `kube-prometheus-stack`
 
-Architecture source:
+Traffic and deployment flow:
 
-`docs/architecture.drawio`
+```text
+GitHub
+   |
+   v
+GitHub Actions --OIDC--> AWS IAM
+   |                        |
+   |                        v
+   +---- build/scan -----> ECR
+                            |
+                            v
+Internet --> NLB --> Pac-Man Service --> Pac-Man Pod
+                                      |
+                                      v
+                                 MongoDB StatefulSet
+                                      |
+                                      v
+                                  encrypted EBS
 
-The project intentionally uses public subnets without a NAT Gateway.
+Prometheus <---- Kubernetes / node metrics
+    |
+    v
+ Grafana
+```
 
-This is a cost-conscious lab design. A production environment would normally use stronger network isolation, such as private worker capacity and more restrictive control-plane access.
+Architecture files:
+
+- `docs/architecture.drawio`
+- `docs/architecture.png`
+
+The project intentionally uses public subnets and no NAT Gateway to keep the lab architecture simple and cost-conscious. A production design would normally use stronger network isolation.
 
 ## Repository Structure
 
 ```text
 .
-├── .github/
-│   └── workflows/
-│       └── ci-cd.yml
+├── .github/workflows/ci-cd.yml
 ├── docs/
-│   └── COMPLETION_PLAN.md
+│   ├── architecture.drawio
+│   └── architecture.png
 ├── k8s/
 │   ├── namespace.yaml
 │   ├── storage-class.yaml
@@ -60,18 +67,13 @@ This is a cost-conscious lab design. A production environment would normally use
 │   ├── app-configmap.yaml
 │   ├── app-deployment.yaml
 │   └── app-service.yaml
-├── monitoring/
-│   └── kube-prometheus-values.yaml
+├── monitoring/kube-prometheus-values.yaml
 ├── scripts/
 │   ├── launch.py
 │   └── terminate.py
 ├── terraform/
 │   ├── bootstrap/
 │   ├── modules/
-│   │   ├── network/
-│   │   ├── ecr/
-│   │   ├── eks/
-│   │   └── github_oidc/
 │   ├── main.tf
 │   ├── variables.tf
 │   ├── outputs.tf
@@ -82,142 +84,106 @@ This is a cost-conscious lab design. A production environment would normally use
 └── README.md
 ```
 
-## Application Container
+## Prerequisites
 
-The application image is based on:
+Required locally:
 
-`node:22-bookworm-slim`
+- AWS CLI v2
+- Terraform
+- Docker
+- kubectl
+- Helm
+- Git
+- Python 3
 
-The Docker image:
+AWS CLI must already be authenticated to the project AWS account and have sufficient permissions to create and destroy the environment.
 
-- installs production dependencies using `npm ci --omit=dev`
-- uses the repository package lock file
-- runs as the built-in non-root `node` user
-- exposes port `8080`
-- copies the local source code into the image
-- does not clone source code during the image build
-- is built for `linux/amd64`
-
-Build locally:
+Verify the active AWS identity before running the project:
 
 ```bash
-docker build   --platform linux/amd64   -t pacman:local   .
+aws sts get-caller-identity
 ```
 
-The project uses `linux/amd64` consistently because the required legacy MongoDB image and the tested EKS Auto Mode environment use amd64.
+The scripts also verify the expected account automatically before making changes.
+
+## Application Container
+
+The Pac-Man image uses:
+
+```text
+node:22-bookworm-slim
+```
+
+The image:
+
+- installs production dependencies with `npm ci --omit=dev`
+- runs as the non-root `node` user
+- exposes port `8080`
+- is built for `linux/amd64`
+- is tagged with the exact Git commit SHA for runtime deployment
+
+The launch script verifies that the built container does not run as UID `0` before pushing it to ECR.
 
 ## Terraform
 
-Terraform configuration is stored under:
+Terraform manages the AWS foundation:
 
-`terraform/`
-
-Terraform manages:
-
-- VPC networking
-- two public subnets
-- Internet Gateway and routing
-- Amazon ECR repository
-- Amazon EKS Auto Mode cluster
+- VPC `10.0.0.0/16`
+- public subnet `10.0.1.0/24` in `us-east-1a`
+- public subnet `10.0.2.0/24` in `us-east-1b`
+- Internet Gateway and public routing
+- ECR repository
+- EKS Auto Mode cluster
 - EKS IAM roles
 - GitHub Actions OIDC provider and IAM role
-- EKS access entry for GitHub Actions
-- namespace-scoped Kubernetes access for CI/CD
+- namespace-scoped EKS access for GitHub Actions
 
-Network configuration:
+Terraform state is stored remotely in an encrypted, versioned S3 bucket.
 
-```text
-VPC: 10.0.0.0/16
-
-us-east-1a:
-10.0.1.0/24
-
-us-east-1b:
-10.0.2.0/24
-```
-
-The Terraform state is stored remotely in an encrypted and versioned Amazon S3 bucket.
-
-The bootstrap state and main environment state are kept separately.
-
-Safe Terraform validation:
-
-```bash
-terraform -chdir=terraform init
-terraform -chdir=terraform fmt -check -recursive
-terraform -chdir=terraform validate
-terraform -chdir=terraform plan
-```
-
-The current cost-safe preview is expected to show:
-
-```text
-Plan: 25 to add, 0 to change, 0 to destroy.
-```
-
-## Amazon EKS Auto Mode
-
-The cluster is named:
-
-`pacman-dev`
-
-Configuration:
-
-- Kubernetes `1.34`
-- EKS Auto Mode
-- Standard EKS support policy
-- Auto Mode compute
-- Auto Mode block storage
-- Auto Mode load balancing
-- public and private Kubernetes API endpoints enabled
-- public API access protected by IAM/EKS authentication
-
-The public API endpoint is a deliberate lab CI/CD trade-off because GitHub-hosted runners do not use a fixed outbound IP address.
+The remote-state bucket is intentionally retained after runtime teardown.
 
 ## Kubernetes
 
-Kubernetes manifests are stored under:
+The application namespace is:
 
-`k8s/`
-
-The application uses the namespace:
-
-`pacman`
+```text
+pacman
+```
 
 ### MongoDB
 
 MongoDB runs as a single-replica StatefulSet using:
 
-`mongo:3.4.24`
+```text
+mongo:3.4.24
+```
 
 It uses:
 
-- a headless Kubernetes Service named `mongo`
+- headless Service `mongo`
 - port `27017`
-- a `1Gi` PersistentVolumeClaim
+- `1Gi` PVC
 - EKS Auto Mode EBS CSI provisioning
-- encrypted gp3 storage
+- encrypted `gp3` storage
 - `WaitForFirstConsumer`
 - `ReadWriteOnce`
 
-The storage layer is used to demonstrate that application data survives MongoDB pod recreation.
+Persistence was runtime-tested by inserting data, deleting the MongoDB Pod and verifying that the recreated StatefulSet Pod used the same persistent storage and retained the data.
 
 ### Pac-Man
 
-Pac-Man runs as a Kubernetes Deployment.
+Pac-Man runs as a single-replica Deployment.
 
-The container:
+Runtime controls include:
 
-- listens on port `8080`
-- runs as UID/GID `1000`
-- cannot escalate privileges
-- drops Linux capabilities
-- has CPU and memory requests and limits
-- uses an HTTP readiness probe
+- UID/GID `1000`
+- `runAsNonRoot: true`
+- privilege escalation disabled
+- all Linux capabilities dropped
+- CPU and memory requests/limits
+- HTTP readiness probe
 
-MongoDB configuration is provided using a ConfigMap.
-
-Important environment variables include:
+MongoDB configuration is provided through the Pac-Man ConfigMap:
 
 ```text
 MONGO_SERVICE_HOST=mongo
@@ -228,92 +194,208 @@ MONGO_VALIDATE_SSL=false
 MONGO_URL=mongodb://mongo:27017/pacman
 ```
 
-The application has already been runtime-tested successfully against MongoDB and returned HTTP 200 through `kubectl port-forward`.
+The deployment manifest contains a repository image placeholder, but the launch workflow injects the exact immutable ECR image URI for the current Git SHA before applying the Deployment. GitHub Actions also updates the running Deployment with the exact SHA image it built and scanned.
+
+## Launch Workflow
+
+The main operational entry point is:
+
+```text
+scripts/launch.py
+```
+
+### Preview only
+
+Run:
+
+```bash
+python3 scripts/launch.py
+```
+
+This performs safe checks without creating AWS runtime resources:
+
+- required tools and files
+- AWS account and region
+- Terraform state bucket
+- absence of an existing Pac-Man runtime
+- Terraform init
+- Terraform formatting
+- Terraform validation
+- empty runtime Terraform state
+- Terraform creation plan
+- Git working tree status
+
+A clean destroyed environment should produce a Terraform plan similar to:
+
+```text
+Plan: 25 to add, 0 to change, 0 to destroy.
+```
+
+### Create the environment
+
+Run from a clean Git working tree:
+
+```bash
+python3 scripts/launch.py --apply
+```
+
+The script requires explicit confirmation before starting the real deployment.
+
+For non-interactive execution:
+
+```bash
+python3 scripts/launch.py --apply --yes
+```
+
+`--yes` should only be used when the target account and intended cost are already understood.
+
+The runtime workflow is:
+
+```text
+Preflight checks
+    |
+Terraform apply
+    |
+EKS ACTIVE + kubeconfig
+    |
+Docker linux/amd64 build
+    |
+non-root image verification
+    |
+ECR login + immutable Git SHA push
+    |
+namespace + StorageClass
+    |
+MongoDB StatefulSet + PVC/EBS verification
+    |
+Pac-Man Deployment
+    |
+MongoDB connectivity check
+    |
+internal HTTP 200 check
+    |
+NLB Service / external HTTP check
+    |
+Prometheus + Grafana install
+    |
+final runtime summary
+```
+
+If any normal required deployment step fails, the launch exits with an error so the failure is visible rather than silently ignored.
 
 ## Network Load Balancer
 
-The Pac-Man Service uses:
+The Pac-Man Service is configured as:
 
 ```text
 type: LoadBalancer
 loadBalancerClass: eks.amazonaws.com/nlb
 ```
 
-EKS Auto Mode provisions an internet-facing AWS Network Load Balancer.
+with:
 
-Traffic flow:
+```text
+internet-facing
+NLB target type: ip
+```
+
+Expected traffic flow:
 
 ```text
 Internet
    |
-AWS Network Load Balancer :80
+AWS NLB :80
    |
 Pac-Man Service
    |
 Pac-Man Pod :8080
 ```
 
-The final runtime acceptance test will verify:
+### Current AWS account restriction
 
-- NLB creation
-- NLB DNS name
-- healthy target registration
-- external HTTP 200 response
+The architecture and Kubernetes Service are configured for EKS Auto Mode NLB provisioning, but the project AWS account currently returns an account-level AWS error when `CreateLoadBalancer` is attempted:
+
+```text
+OperationNotPermitted
+This AWS account currently does not support creating load balancers.
+```
+
+This is an external account restriction rather than a Kubernetes manifest failure.
+
+`launch.py` detects this specific condition, reports:
+
+```text
+Public NLB: BLOCKED_BY_AWS
+```
+
+and continues to monitoring so the rest of the environment can still be validated.
+
+Once AWS removes the account restriction, the same Service and launch workflow are intended to continue through NLB hostname and external HTTP validation without changing the architecture.
+
+While the NLB is unavailable, Pac-Man can still be reached locally for validation:
+
+```bash
+kubectl port-forward -n pacman deployment/pacman 8000:8080
+```
+
+Then open:
+
+```text
+http://localhost:8000
+```
 
 ## CI/CD
 
-GitHub Actions workflow:
+Workflow:
 
-`.github/workflows/ci-cd.yml`
+```text
+.github/workflows/ci-cd.yml
+```
 
-The pipeline performs:
+A push to `main` runs the CI/CD pipeline.
+
+Pipeline flow:
 
 ```text
 Checkout
-  ↓
-npm ci
-  ↓
+   |
+npm ci --omit=dev
+   |
 npm audit
-  ↓
+   |
 Docker build
-  ↓
+   |
 non-root verification
-  ↓
+   |
 Trivy image scan
-  ↓
+   |
 save exact scanned image
-  ↓
+   |
 AWS authentication with OIDC
-  ↓
-ECR push
-  ↓
-EKS image update
-  ↓
+   |
+ECR push with Git SHA tag
+   |
+EKS Deployment image update
+   |
 rollout verification
 ```
 
-Application images use the Git commit SHA as an immutable image tag.
+GitHub Actions uses AWS OIDC rather than long-lived AWS access keys.
 
-The exact Docker image that is scanned is saved and promoted to the deployment stage. The deployment job does not rebuild a different image.
+The CI/CD IAM/EKS access is limited to the required AWS actions and the `pacman` Kubernetes namespace.
 
-AWS authentication uses GitHub OIDC.
+The automatic `main` deployment path has been runtime-tested successfully.
 
-No long-lived AWS access keys are stored in GitHub.
-
-GitHub Actions EKS access is scoped to the `pacman` namespace.
-
-During cost-safe development, the workflow is manually triggered.
-
-The final acceptance test will enable automatic deployment on push to `main`.
+Note: a push to `main` while the EKS runtime is intentionally destroyed will still run the workflow, but the deploy stage cannot update a cluster that does not exist. For normal deployment use, create the runtime first with `launch.py --apply`.
 
 ## Security
 
-Implemented DevSecOps controls include:
+Implemented controls include:
 
-- MFA on the AWS administrative identities used for the lab
+- MFA on the AWS identities used for the lab
 - GitHub OIDC instead of static AWS credentials
 - repository/branch-scoped OIDC trust
-- namespace-scoped CI/CD Kubernetes access
+- namespace-scoped Kubernetes access for CI/CD
 - immutable ECR image tags
 - non-root Docker container
 - explicit non-root Kubernetes UID/GID
@@ -321,29 +403,34 @@ Implemented DevSecOps controls include:
 - Linux capabilities dropped
 - CPU and memory limits
 - encrypted EBS storage
-- Trivy container image scanning
+- Trivy image scanning
 - npm dependency auditing
 - GitHub Actions pinned to specific commit SHAs
 
-### Legacy Dependency Risk
+### Legacy dependency findings
 
-The supplied Pac-Man application and the required MongoDB `3.4.24` image contain legacy dependencies.
+The supplied Pac-Man application and required MongoDB version are legacy components.
 
-Security scans are expected to report vulnerabilities.
+Current production dependency audit baseline:
 
-For this course project, findings are documented rather than automatically force-fixed because aggressive dependency upgrades could break the supplied legacy application.
+```text
+8 vulnerabilities
+1 low
+1 high
+6 critical
+```
 
-The CI pipeline therefore reports the known vulnerability baseline instead of permanently failing every build on existing HIGH or CRITICAL findings.
+The findings are reported but not force-fixed because `npm audit fix --force` proposes breaking dependency upgrades that can break the supplied application.
+
+The CI workflow therefore records the security findings while allowing the known legacy baseline to continue through the lab pipeline.
 
 ## Monitoring
 
-Monitoring configuration:
+Monitoring uses:
 
-`monitoring/kube-prometheus-values.yaml`
-
-Pinned chart:
-
-`kube-prometheus-stack 87.21.0`
+```text
+kube-prometheus-stack 87.21.0
+```
 
 Enabled components:
 
@@ -352,138 +439,159 @@ Enabled components:
 - kube-state-metrics
 - node-exporter
 
-The monitoring configuration intentionally uses:
+Monitoring is intentionally temporary and internal:
 
-- no persistent Prometheus storage
+- no Prometheus PVC
 - no Grafana PVC
 - no monitoring LoadBalancer
 - no monitoring Ingress
-- no Alertmanager
-- short Prometheus retention
-- lightweight resource requests and limits
+- Alertmanager disabled
+- Prometheus retention `2h`
 
-Grafana is accessed using `kubectl port-forward`.
+Grafana memory is limited to `512Mi`. The lower `256Mi` limit was runtime-tested and caused an OOM restart during Grafana plugin initialization, so the final configuration uses the verified `512Mi` limit.
 
-The Helm configuration has already been rendered successfully locally for Kubernetes `1.34.1`.
+To access Grafana:
 
-The final runtime acceptance test will verify that the monitoring workloads are running and that Kubernetes metrics are visible in Grafana.
+```bash
+kubectl port-forward \
+  -n monitoring \
+  svc/pacman-monitoring-grafana \
+  3000:80
+```
 
-## Safe Launch Workflow
+Open:
 
-Script:
+```text
+http://localhost:3000
+```
 
-`scripts/launch.py`
+Username:
 
-While the project is in COST-SAFE mode, the script performs validation and preview only.
+```text
+admin
+```
 
-It checks:
+Retrieve the generated admin password locally:
 
-- required local tools
-- required project files
-- AWS account and region
-- Terraform state bucket
-- absence of EKS runtime
-- absence of Auto Mode EC2 instances
-- absence of project EBS volumes
-- Terraform initialization
-- Terraform formatting
-- Terraform validation
-- empty root Terraform state
-- Terraform creation plan
+```bash
+kubectl get secret pacman-monitoring-grafana \
+  -n monitoring \
+  -o jsonpath='{.data.admin-password}' \
+  | base64 --decode; echo
+```
 
-The script documents the final runtime sequence but does not currently execute:
-
-- `terraform apply`
-- ECR pushes
-- `kubectl apply`
-- Helm installation
-- NLB creation
-
-The frozen final sequence is documented in:
-
-`docs/COMPLETION_PLAN.md`
+Kubernetes Pod metrics were runtime-tested successfully in Grafana using the `pacman` namespace.
 
 ## Teardown
 
-Script:
+The teardown entry point is:
 
-`scripts/terminate.py`
+```text
+scripts/terminate.py
+```
 
-The teardown workflow removes Kubernetes resources before destroying the EKS infrastructure.
-
-This is important for resources such as:
-
-- Network Load Balancers
-- Target Groups
-- persistent EBS volumes
-
-The script has already completed one successful real teardown of the previously tested EKS, Pac-Man, MongoDB and EBS environment.
-
-A historical EKS Auto Mode EC2 Fleet object may remain visible after teardown. The original EC2 instance behind that instant Fleet no longer exists and the Fleet is not treated as an active billable runtime resource.
-
-The teardown script will receive one final validation after NLB and monitoring are included in the final environment.
-
-Preview teardown:
+### Preview cleanup
 
 ```bash
 python3 scripts/terminate.py
 ```
 
-Actual teardown:
+This displays the Terraform destroy preview and current project runtime inventory without deleting resources.
+
+### Destroy the runtime
 
 ```bash
 python3 scripts/terminate.py --destroy
 ```
 
+The script requires confirmation before deletion.
+
+For non-interactive execution:
+
+```bash
+python3 scripts/terminate.py --destroy --yes
+```
+
+The cleanup sequence removes Kubernetes-managed resources before Terraform destroys the EKS foundation:
+
+```text
+Monitoring Helm release / namespace
+    |
+LoadBalancer Services / Ingresses
+    |
+remaining NLB / Target Groups
+    |
+Pac-Man and MongoDB workloads
+    |
+PVC / persistent EBS
+    |
+pacman namespace / StorageClass
+    |
+Terraform destroy
+    |
+Auto Mode EC2/EBS wait
+    |
+final orphan verification
+```
+
+Final verification requires zero active project runtime resources for:
+
+```text
+EKS clusters
+Auto Mode EC2 instances
+EBS volumes
+Load Balancers
+Target Groups
+Project VPCs
+Terraform runtime state
+```
+
+The teardown workflow has already been runtime-tested successfully. After the latest full destroy, independent AWS CLI checks also confirmed zero EKS clusters, active Auto Mode EC2 instances, EBS volumes, load balancers, target groups and Pac-Man VPCs.
+
+The remote Terraform state S3 bucket is retained intentionally.
+
+Some historical EKS Auto Mode metadata may remain visible in AWS resource discovery even after the active compute/storage/network resources are gone. The teardown safety decision is based on active EC2, EBS, EKS, ELB, Target Group, VPC and Terraform runtime state rather than metadata-only records.
+
 ## Cost Control
 
-The project is designed as a temporary lab environment.
+The environment is designed to be temporary.
 
-Cost-control decisions include:
+Cost-conscious decisions include:
 
 - two Availability Zones only
 - no NAT Gateway
-- minimal application replicas
-- small persistent volume allocation
-- lightweight monitoring
+- one Pac-Man replica
+- one MongoDB replica
+- `1Gi` application PVC
+- temporary monitoring storage
 - no public Grafana endpoint
-- monitoring installed only for the final validation phase
-- complete runtime teardown after testing
+- full runtime teardown after testing
 
-The Terraform state S3 bucket is intentionally retained after runtime teardown because its storage cost is negligible and it preserves infrastructure state history.
+Always run the teardown when the environment is no longer required:
 
-## Completion Status
+```bash
+python3 scripts/terminate.py --destroy
+```
 
-The frozen completion plan is stored in:
+## Current Validation Status
 
-`docs/COMPLETION_PLAN.md`
+Validated successfully:
 
-Remaining runtime acceptance gates:
+```text
+Terraform create/destroy                  OK
+EKS Auto Mode                             OK
+Docker/ECR immutable image workflow       OK
+Pac-Man -> MongoDB connectivity            OK
+Internal HTTP 200                         OK
+MongoDB persistent EBS                    OK
+Persistence after Mongo Pod recreation    OK
+GitHub Actions OIDC CI/CD                 OK
+Automatic deployment from main            OK
+Prometheus/Grafana                         OK
+Grafana Kubernetes metrics                OK
+Runtime non-root UID 1000                 OK
+Final teardown/orphan verification        OK
+Public NLB                                BLOCKED BY AWS ACCOUNT
+```
 
-1. recreate the AWS environment
-2. verify EKS and kubeconfig
-3. build and push a new immutable application image
-4. deploy MongoDB and verify PVC/EBS
-5. deploy Pac-Man and verify database connectivity
-6. verify internal HTTP 200
-7. create and verify the public NLB
-8. verify MongoDB persistence after pod recreation
-9. enable and verify automatic GitHub Actions deployment from `main`
-10. install and verify Prometheus and Grafana
-11. capture security and infrastructure evidence
-12. finalize screenshots and documentation
-13. run the final teardown and orphan verification
-
-## Final Acceptance Criteria
-
-The project is finished when:
-
-- Terraform recreates the AWS environment successfully
-- Pac-Man is reachable through the AWS Network Load Balancer
-- MongoDB persistence survives pod recreation
-- GitHub Actions automatically deploys from `main` using OIDC
-- Prometheus and Grafana monitoring are demonstrated
-- security scan findings are documented
-- README and architecture diagram are complete
-- required screenshots are captured
-- final teardown leaves no active billable runtime resources
+The remaining external acceptance item is public NLB creation and external HTTP access after AWS removes the account-level load balancer restriction.
