@@ -62,7 +62,9 @@ The project intentionally uses public subnets and no NAT Gateway to keep the lab
 ├── k8s/
 │   ├── namespace.yaml
 │   ├── storage-class.yaml
+│   ├── enable-network-policy.yaml
 │   ├── mongo-service.yaml
+│   ├── mongo-networkpolicy.yaml
 │   ├── mongo-statefulset.yaml
 │   ├── app-configmap.yaml
 │   ├── app-deployment.yaml
@@ -108,15 +110,16 @@ The scripts also verify the expected account automatically before making changes
 
 ## Application Container
 
-The Pac-Man image uses:
+The Pac-Man image uses a digest-pinned Node base image:
 
 ```text
-node:22-bookworm-slim
+node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
 ```
 
 The image:
 
 - installs production dependencies with `npm ci --omit=dev`
+- removes `npm` and `npx` from the final runtime image after dependency installation
 - runs as the non-root `node` user
 - exposes port `8080`
 - is built for `linux/amd64`
@@ -167,12 +170,18 @@ It uses:
 - encrypted `gp3` storage
 - `WaitForFirstConsumer`
 - `ReadWriteOnce`
+- non-root UID/GID `999`
+- `fsGroup: 999` for persistent-volume access
+- privilege escalation disabled
+- all Linux capabilities dropped
+
+MongoDB ingress is restricted by `k8s/mongo-networkpolicy.yaml`. Only Pac-Man Pods with the `app: pacman` label are allowed to connect to MongoDB on TCP port `27017`. EKS Auto Mode network-policy support is enabled during bootstrap by `k8s/enable-network-policy.yaml`.
 
 Persistence was runtime-tested by inserting data, deleting the MongoDB Pod and verifying that the recreated StatefulSet Pod used the same persistent storage and retained the data.
 
 ### Pac-Man
 
-Pac-Man runs as a single-replica Deployment.
+Pac-Man runs as a two-replica Deployment.
 
 Runtime controls include:
 
@@ -182,6 +191,8 @@ Runtime controls include:
 - all Linux capabilities dropped
 - CPU and memory requests/limits
 - HTTP readiness probe
+- HTTP liveness probe
+- RollingUpdate strategy with `maxUnavailable: 0`
 
 MongoDB configuration is provided through the Pac-Man ConfigMap:
 
@@ -194,7 +205,7 @@ MONGO_VALIDATE_SSL=false
 MONGO_URL=mongodb://mongo:27017/pacman
 ```
 
-The deployment manifest contains a repository image placeholder, but the launch workflow injects the exact immutable ECR image URI for the current Git SHA before applying the Deployment. GitHub Actions also updates the running Deployment with the exact SHA image it built and scanned.
+The deployment manifest contains `PACMAN_IMAGE_PLACEHOLDER`. The launch workflow injects the exact immutable ECR image URI before applying the Deployment. GitHub Actions follows the same model by rendering the Deployment with the exact Git SHA image that was built and scanned by CI.
 
 ## Launch Workflow
 
@@ -264,9 +275,9 @@ non-root image verification
     |
 ECR login + immutable bootstrap Git SHA push
     |
-namespace + StorageClass
+network-policy controller + namespace + StorageClass
     |
-MongoDB StatefulSet + PVC/EBS verification
+MongoDB Service + NetworkPolicy + StatefulSet + PVC/EBS verification
     |
 Pac-Man Deployment
     |
@@ -354,39 +365,43 @@ Workflow:
 .github/workflows/ci-cd.yml
 ```
 
-A push to `main` runs the CI/CD pipeline.
+Pull requests to `main` run validation without deploying to AWS. A push to `main` runs the same validation and, when the runtime exists, continues to the deployment job.
 
-Pipeline flow:
+Validation flow:
 
 ```text
-Checkout
-   |
-npm ci --omit=dev
-   |
-npm audit
-   |
-Docker build
-   |
-non-root verification
-   |
-Trivy image scan
-   |
-save exact scanned image
+Terraform fmt / init -backend=false / validate
+                    +
+Checkout -> npm ci -> npm audit -> Docker build -> non-root check -> Trivy gate
+```
+
+Deployment flow on `main`:
+
+```text
+Save exact scanned image
    |
 AWS authentication with OIDC
    |
 ECR push with Git SHA tag
    |
-EKS Deployment image update
+apply namespace-scoped Kubernetes manifests
+   |
+render Pac-Man Deployment with exact image URI
+   |
+apply Deployment
    |
 rollout verification
 ```
+
+Cluster-scoped bootstrap resources such as the namespace, StorageClass and EKS network-policy controller configuration remain the responsibility of `launch.py`. The CI role stays limited to the `pacman` namespace.
 
 GitHub Actions uses AWS OIDC rather than long-lived AWS access keys.
 
 The CI/CD IAM/EKS access is limited to the required AWS actions and the `pacman` Kubernetes namespace.
 
-The automatic `main` deployment path has been runtime-tested successfully.
+The PR validation path has been tested successfully with Terraform validation, Docker build, non-root verification and the blocking Trivy gate all passing while the deploy job was correctly skipped.
+
+The automatic `main` deployment path was runtime-tested successfully before the latest hardening changes. One final runtime deployment is planned after the hardened environment is launched.
 
 Note: a push to `main` while the EKS runtime is intentionally destroyed will still run the workflow, but the deploy stage cannot update a cluster that does not exist. For normal deployment use, create the runtime first with `launch.py --apply`.
 
@@ -399,32 +414,32 @@ Implemented controls include:
 - repository/branch-scoped OIDC trust
 - namespace-scoped Kubernetes access for CI/CD
 - immutable ECR image tags
+- digest-pinned Node base image
 - non-root Docker container
-- explicit non-root Kubernetes UID/GID
+- explicit non-root Kubernetes UID/GID for Pac-Man and MongoDB
 - privilege escalation disabled
 - Linux capabilities dropped
+- MongoDB ingress restricted with Kubernetes NetworkPolicy
 - CPU and memory limits
 - encrypted EBS storage
-- Trivy image scanning
+- blocking Trivy gate for fixable `HIGH` and `CRITICAL` image vulnerabilities
 - npm dependency auditing
 - GitHub Actions pinned to specific commit SHAs
+- Terraform formatting and validation in CI
 
-### Legacy dependency findings
+### Legacy dependency handling
 
-The supplied Pac-Man application and required MongoDB version are legacy components.
+The supplied Pac-Man application and required MongoDB server version are legacy components.
 
-Current production dependency audit baseline:
+`npm audit` remains an informational CI check because force-upgrading the full legacy dependency tree can introduce breaking changes. The runtime image is separately protected by the blocking Trivy gate using:
 
 ```text
-8 vulnerabilities
-1 low
-1 high
-6 critical
+severity: HIGH,CRITICAL
+ignore-unfixed: true
+exit-code: 1
 ```
 
-The findings are reported but not force-fixed because `npm audit fix --force` proposes breaking dependency upgrades that can break the supplied application.
-
-The CI workflow therefore records the security findings while allowing the known legacy baseline to continue through the lab pipeline.
+The hardened runtime image was locally validated with zero fixable `HIGH` or `CRITICAL` Trivy findings. The MongoDB Node driver and the specific vulnerable transitive dependencies were upgraded to compatible fixed versions rather than bypassing the gate with a broad ignore file.
 
 ## Monitoring
 
@@ -562,7 +577,7 @@ Cost-conscious decisions include:
 
 - two Availability Zones only
 - no NAT Gateway
-- one Pac-Man replica
+- two lightweight Pac-Man replicas for rolling updates and basic availability
 - one MongoDB replica
 - `1Gi` application PVC
 - temporary monitoring storage
@@ -588,12 +603,16 @@ Internal HTTP 200                         OK
 MongoDB persistent EBS                    OK
 Persistence after Mongo Pod recreation    OK
 GitHub Actions OIDC CI/CD                 OK
-Automatic deployment from main            OK
+Hardening PR CI validation                OK
+Terraform CI validation                   OK
+Trivy fixable HIGH/CRITICAL gate           OK (0 findings)
+Automatic deployment from main            OK (pre-hardening runtime test)
 Prometheus/Grafana                         OK
 Grafana Kubernetes metrics                OK
 Runtime non-root UID 1000                 OK
 Final teardown/orphan verification        OK
+Final hardened EKS acceptance             PENDING FINAL RUN
 Public NLB                                BLOCKED BY AWS ACCOUNT
 ```
 
-The remaining external acceptance item is public NLB creation and external HTTP access after AWS removes the account-level load balancer restriction.
+The remaining project work is one final hardened runtime launch, one full `main` CI/CD deployment while the cluster is active, and final teardown. Public NLB acceptance depends on AWS removing the account-level load balancer restriction.
