@@ -20,6 +20,7 @@ MONITORING_NAMESPACE = "monitoring"
 MONITORING_RELEASE = "pacman-monitoring"
 STORAGE_CLASS = "gp3-auto"
 AUTO_MODE_CSI_DRIVER = "ebs.csi.eks.amazonaws.com"
+STATE_BUCKET = f"pacman-terraform-state-{EXPECTED_ACCOUNT_ID}-{AWS_REGION}"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TERRAFORM_DIR = PROJECT_ROOT / "terraform"
@@ -883,6 +884,128 @@ def show_inventory(verbose=False):
         print(f"  EKS: {cluster}")
 
 
+def delete_state_bucket():
+    print()
+    print("=== Terraform State Bucket Cleanup ===")
+
+    exists = run_command(
+        [
+            "aws",
+            "s3api",
+            "head-bucket",
+            "--bucket",
+            STATE_BUCKET,
+        ],
+        allow_failure=True,
+    )
+
+    if exists.returncode != 0:
+        print("Terraform state bucket does not exist; skipping.")
+        return True
+
+    print(f"Deleting all versions from: {STATE_BUCKET}")
+
+    data = run_aws_json(
+        [
+            "s3api",
+            "list-object-versions",
+            "--bucket",
+            STATE_BUCKET,
+        ],
+        allow_failure=True,
+    )
+
+    if data is None:
+        print("ERROR: Could not list Terraform state bucket contents.")
+        return False
+
+    objects = []
+
+    for item in data.get("Versions", []):
+        objects.append(
+            {
+                "Key": item["Key"],
+                "VersionId": item["VersionId"],
+            }
+        )
+
+    for item in data.get("DeleteMarkers", []):
+        objects.append(
+            {
+                "Key": item["Key"],
+                "VersionId": item["VersionId"],
+            }
+        )
+
+    for start in range(0, len(objects), 1000):
+        batch = objects[start:start + 1000]
+
+        result = run_command(
+            [
+                "aws",
+                "s3api",
+                "delete-objects",
+                "--bucket",
+                STATE_BUCKET,
+                "--delete",
+                json.dumps(
+                    {
+                        "Objects": batch,
+                        "Quiet": True,
+                    }
+                ),
+                "--region",
+                AWS_REGION,
+                "--no-cli-pager",
+            ],
+            allow_failure=True,
+        )
+
+        if result.returncode != 0:
+            print("ERROR: Failed to delete Terraform state objects.")
+            if result.stderr.strip():
+                print(result.stderr.strip())
+            return False
+
+    result = run_command(
+        [
+            "aws",
+            "s3api",
+            "delete-bucket",
+            "--bucket",
+            STATE_BUCKET,
+            "--region",
+            AWS_REGION,
+            "--no-cli-pager",
+        ],
+        allow_failure=True,
+    )
+
+    if result.returncode != 0:
+        print("ERROR: Failed to delete Terraform state bucket.")
+        if result.stderr.strip():
+            print(result.stderr.strip())
+        return False
+
+    verify = run_command(
+        [
+            "aws",
+            "s3api",
+            "head-bucket",
+            "--bucket",
+            STATE_BUCKET,
+        ],
+        allow_failure=True,
+    )
+
+    if verify.returncode == 0:
+        print("ERROR: Terraform state bucket still exists.")
+        return False
+
+    print("Terraform state bucket deletion: complete")
+    return True
+
+
 def final_verification():
     print()
     print("=== Final Orphan Verification ===")
@@ -958,7 +1081,6 @@ def final_verification():
         "load balancer, target group, project VPC or Terraform "
         "runtime state remains."
     )
-    print("The remote Terraform state S3 bucket is retained intentionally.")
     return True
 
 
@@ -1070,6 +1192,12 @@ def main():
 
     if not final_verification():
         sys.exit(1)
+
+    if not delete_state_bucket():
+        fail(
+            "Runtime teardown completed, but Terraform state bucket "
+            "cleanup failed."
+        )
 
     print()
     print("Teardown completed successfully.")
