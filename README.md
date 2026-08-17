@@ -399,9 +399,9 @@ GitHub Actions uses AWS OIDC rather than long-lived AWS access keys.
 
 The CI/CD IAM/EKS access is limited to the required AWS actions and the `pacman` Kubernetes namespace.
 
-The PR validation path has been tested successfully with Terraform validation, Docker build, non-root verification and the blocking Trivy gate all passing while the deploy job was correctly skipped.
+The PR validation path was tested successfully with Terraform validation, Docker build, non-root verification and the blocking Trivy gate all passing while the deploy job was correctly skipped.
 
-The automatic `main` deployment path was runtime-tested successfully before the latest hardening changes. One final runtime deployment is planned after the hardened environment is launched.
+The final hardened `main` deployment was also runtime-tested successfully. GitHub Actions authenticated through OIDC, pushed the exact scanned Git-SHA image to ECR, applied the namespace-scoped manifests and completed both MongoDB and Pac-Man rollouts successfully.
 
 Note: a push to `main` while the EKS runtime is intentionally destroyed will still run the workflow, but the deploy stage cannot update a cluster that does not exist. For normal deployment use, create the runtime first with `launch.py --apply`.
 
@@ -439,7 +439,7 @@ ignore-unfixed: true
 exit-code: 1
 ```
 
-The hardened runtime image was locally validated with zero fixable `HIGH` or `CRITICAL` Trivy findings. The MongoDB Node driver and the specific vulnerable transitive dependencies were upgraded to compatible fixed versions rather than bypassing the gate with a broad ignore file.
+The hardened runtime image was validated with zero fixable `HIGH` or `CRITICAL` Trivy findings. The MongoDB Node driver and the specific vulnerable transitive dependencies were upgraded to compatible fixed versions rather than bypassing the gate with a broad ignore file.
 
 ## Monitoring
 
@@ -563,7 +563,7 @@ Project VPCs
 Terraform runtime state
 ```
 
-The teardown workflow has already been runtime-tested successfully. After the latest full destroy, independent AWS CLI checks also confirmed zero EKS clusters, active Auto Mode EC2 instances, EBS volumes, load balancers, target groups and Pac-Man VPCs.
+The final teardown completed successfully after the hardened runtime and CI/CD acceptance run. Final orphan verification reported zero EKS clusters, active Auto Mode EC2 instances, EBS volumes, load balancers, target groups, project VPCs and Terraform runtime resources.
 
 The remote Terraform state S3 bucket is retained intentionally.
 
@@ -602,17 +602,19 @@ Pac-Man -> MongoDB connectivity            OK
 Internal HTTP 200                         OK
 MongoDB persistent EBS                    OK
 Persistence after Mongo Pod recreation    OK
+MongoDB non-root UID/GID 999              OK
+MongoDB NetworkPolicy enforcement         OK
 GitHub Actions OIDC CI/CD                 OK
 Hardening PR CI validation                OK
 Terraform CI validation                   OK
 Trivy fixable HIGH/CRITICAL gate           OK (0 findings)
-Automatic deployment from main            OK (pre-hardening runtime test)
+Automatic deployment from main            OK
 Prometheus/Grafana                         OK
 Grafana Kubernetes metrics                OK
 Runtime non-root UID 1000                 OK
+Final hardened EKS acceptance             OK
 Final teardown/orphan verification        OK
-Final hardened EKS acceptance             PENDING FINAL RUN
 Public NLB                                BLOCKED BY AWS ACCOUNT
 ```
 
-The remaining project work is one final hardened runtime launch, one full `main` CI/CD deployment while the cluster is active, and final teardown. Public NLB acceptance depends on AWS removing the account-level load balancer restriction.
+All project-controlled validation and teardown steps are complete. The only unresolved item is the external AWS account restriction preventing Network Load Balancer creation; the project configuration and handling for that condition are documented above.
