@@ -4,8 +4,5 @@ npm-debug.log
 .github
 .DS_Store
 terraform
-eks
 k8s
 scripts
-screenshots
-docker
