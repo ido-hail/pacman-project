@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 
 
-EXPECTED_ACCOUNT_ID = "506456084249"
 AWS_REGION = "us-east-1"
 CLUSTER_NAME = "pacman-dev"
 NAMESPACE = "pacman"
@@ -21,7 +20,6 @@ MONITORING_RELEASE = "pacman-monitoring"
 MONITORING_CHART = "prometheus-community/kube-prometheus-stack"
 MONITORING_CHART_VERSION = "87.21.0"
 
-STATE_BUCKET = "pacman-terraform-state-506456084249-us-east-1"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TERRAFORM_DIR = PROJECT_ROOT / "terraform"
@@ -196,17 +194,12 @@ def verify_aws_identity():
     print(f"AWS account : {account_id}")
     print(f"AWS identity: {arn}")
     print(f"AWS region  : {AWS_REGION}")
+    print("AWS authentication passed.")
 
-    if account_id != EXPECTED_ACCOUNT_ID:
-        fail(
-            "AWS account does not match "
-            "the Pac-Man project account."
-        )
-
-    print("AWS account verification passed.")
+    return account_id
 
 
-def ensure_state_bucket():
+def ensure_state_bucket(state_bucket):
     print()
     print("=== Terraform State Bootstrap ===")
 
@@ -216,16 +209,16 @@ def ensure_state_bucket():
             "s3api",
             "head-bucket",
             "--bucket",
-            STATE_BUCKET,
+            state_bucket,
         ],
         allow_failure=True,
     )
 
     if result.returncode == 0:
-        print(f"Terraform state bucket exists: {STATE_BUCKET}")
+        print(f"Terraform state bucket exists: {state_bucket}")
         return
 
-    print(f"Terraform state bucket not found: {STATE_BUCKET}")
+    print(f"Terraform state bucket not found: {state_bucket}")
     print("Creating Terraform remote-state backend...")
 
     run(
@@ -259,7 +252,7 @@ def ensure_state_bucket():
             "s3api",
             "head-bucket",
             "--bucket",
-            STATE_BUCKET,
+            state_bucket,
         ],
         allow_failure=True,
     )
@@ -403,7 +396,7 @@ def verify_runtime_is_off():
     print("No active Pac-Man runtime resources detected.")
 
 
-def terraform_init():
+def terraform_init(state_bucket):
     print()
     print("=== Terraform Init ===")
 
@@ -412,6 +405,8 @@ def terraform_init():
             "terraform",
             f"-chdir={TERRAFORM_DIR}",
             "init",
+            "-reconfigure",
+            f"-backend-config=bucket={state_bucket}",
             "-input=false",
             "-no-color",
         ]
@@ -590,14 +585,14 @@ def show_runtime_plan():
         print(f"{index}. {phase}")
 
 
-def confirm_apply(skip_confirmation):
+def confirm_apply(skip_confirmation, account_id):
     if skip_confirmation:
         return True
 
     print()
     print("WARNING: --apply creates billable AWS resources.")
     print(f"Cluster : {CLUSTER_NAME}")
-    print(f"Account : {EXPECTED_ACCOUNT_ID}")
+    print(f"Account : {account_id}")
     print(f"Region  : {AWS_REGION}")
     print()
 
@@ -1332,12 +1327,15 @@ def main():
     verify_project_files()
 
     print()
-    verify_aws_identity()
-    ensure_state_bucket()
+    account_id = verify_aws_identity()
+    state_bucket = (
+        f"pacman-terraform-state-{account_id}-{AWS_REGION}"
+    )
+    ensure_state_bucket(state_bucket)
 
     verify_runtime_is_off()
 
-    terraform_init()
+    terraform_init(state_bucket)
     terraform_fmt_check()
     terraform_validate()
     terraform_state_check()
@@ -1355,7 +1353,7 @@ def main():
         print("python3 scripts/launch.py --apply")
         return
 
-    if not confirm_apply(args.yes):
+    if not confirm_apply(args.yes, account_id):
         print()
         print("Launch cancelled.")
         print("No terraform apply was started.")

@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 
 
-EXPECTED_ACCOUNT_ID = "506456084249"
 AWS_REGION = "us-east-1"
 PROJECT_NAME = "pacman"
 ENVIRONMENT = "dev"
@@ -20,14 +19,11 @@ MONITORING_NAMESPACE = "monitoring"
 MONITORING_RELEASE = "pacman-monitoring"
 STORAGE_CLASS = "gp3-auto"
 AUTO_MODE_CSI_DRIVER = "ebs.csi.eks.amazonaws.com"
-STATE_BUCKET = f"pacman-terraform-state-{EXPECTED_ACCOUNT_ID}-{AWS_REGION}"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TERRAFORM_DIR = PROJECT_ROOT / "terraform"
 
-EXPECTED_KUBE_CONTEXT = (
-    f"arn:aws:eks:{AWS_REGION}:{EXPECTED_ACCOUNT_ID}:cluster/{CLUSTER_NAME}"
-)
+EXPECTED_KUBE_CONTEXT = None
 
 
 def fail(message):
@@ -303,6 +299,24 @@ def get_volume(volume_id):
 
 def volume_exists(volume_id):
     return get_volume(volume_id) is not None
+
+
+def terraform_init(state_bucket):
+    print()
+    print("=== Terraform Init ===")
+
+    run_command(
+        [
+            "terraform",
+            f"-chdir={TERRAFORM_DIR}",
+            "init",
+            "-reconfigure",
+            f"-backend-config=bucket={state_bucket}",
+            "-input=false",
+            "-no-color",
+        ],
+        live=True,
+    )
 
 
 def terraform_state_resources():
@@ -884,7 +898,7 @@ def show_inventory(verbose=False):
         print(f"  EKS: {cluster}")
 
 
-def delete_state_bucket():
+def delete_state_bucket(state_bucket):
     print()
     print("=== Terraform State Bucket Cleanup ===")
 
@@ -894,7 +908,7 @@ def delete_state_bucket():
             "s3api",
             "head-bucket",
             "--bucket",
-            STATE_BUCKET,
+            state_bucket,
         ],
         allow_failure=True,
     )
@@ -903,14 +917,14 @@ def delete_state_bucket():
         print("Terraform state bucket does not exist; skipping.")
         return True
 
-    print(f"Deleting all versions from: {STATE_BUCKET}")
+    print(f"Deleting all versions from: {state_bucket}")
 
     data = run_aws_json(
         [
             "s3api",
             "list-object-versions",
             "--bucket",
-            STATE_BUCKET,
+            state_bucket,
         ],
         allow_failure=True,
     )
@@ -946,7 +960,7 @@ def delete_state_bucket():
                 "s3api",
                 "delete-objects",
                 "--bucket",
-                STATE_BUCKET,
+                state_bucket,
                 "--delete",
                 json.dumps(
                     {
@@ -973,7 +987,7 @@ def delete_state_bucket():
             "s3api",
             "delete-bucket",
             "--bucket",
-            STATE_BUCKET,
+            state_bucket,
             "--region",
             AWS_REGION,
             "--no-cli-pager",
@@ -993,7 +1007,7 @@ def delete_state_bucket():
             "s3api",
             "head-bucket",
             "--bucket",
-            STATE_BUCKET,
+            state_bucket,
         ],
         allow_failure=True,
     )
@@ -1084,14 +1098,14 @@ def final_verification():
     return True
 
 
-def confirm_destroy(skip_confirmation):
+def confirm_destroy(skip_confirmation, account_id):
     if skip_confirmation:
         return True
 
     print()
     print("WARNING: --destroy will remove the Pac-Man AWS environment.")
     print(f"Cluster : {CLUSTER_NAME}")
-    print(f"Account : {EXPECTED_ACCOUNT_ID}")
+    print(f"Account : {account_id}")
     print(f"Region  : {AWS_REGION}")
     print()
 
@@ -1150,15 +1164,18 @@ def main():
     print(f"AWS account : {account_id}")
     print(f"AWS identity: {arn}")
     print(f"AWS region  : {AWS_REGION}")
+    print("AWS authentication passed.")
 
-    if account_id != EXPECTED_ACCOUNT_ID:
-        fail(
-            "AWS account does not match the project account. "
-            "No actions were performed."
-        )
+    global EXPECTED_KUBE_CONTEXT
+    EXPECTED_KUBE_CONTEXT = (
+        f"arn:aws:eks:{AWS_REGION}:{account_id}:cluster/{CLUSTER_NAME}"
+    )
 
-    print("AWS account verification passed.")
+    state_bucket = (
+        f"pacman-terraform-state-{account_id}-{AWS_REGION}"
+    )
 
+    terraform_init(state_bucket)
     show_inventory(verbose=args.verbose)
 
     if not args.destroy:
@@ -1170,7 +1187,7 @@ def main():
         print("python3 scripts/terminate.py --destroy")
         return
 
-    if not confirm_destroy(args.yes):
+    if not confirm_destroy(args.yes, account_id):
         print()
         print("Destroy cancelled.")
         print("No resources were deleted.")
@@ -1193,7 +1210,7 @@ def main():
     if not final_verification():
         sys.exit(1)
 
-    if not delete_state_bucket():
+    if not delete_state_bucket(state_bucket):
         fail(
             "Runtime teardown completed, but Terraform state bucket "
             "cleanup failed."
