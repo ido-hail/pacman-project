@@ -32,9 +32,11 @@ MONITORING_VALUES = (
 CI_WORKFLOW = PROJECT_ROOT / ".github" / "workflows" / "ci-cd.yml"
 
 REQUIRED_K8S_FILES = [
+    "enable-network-policy.yaml",
     "namespace.yaml",
     "storage-class.yaml",
     "mongo-service.yaml",
+    "mongo-networkpolicy.yaml",
     "mongo-statefulset.yaml",
     "app-configmap.yaml",
     "app-deployment.yaml",
@@ -744,10 +746,13 @@ def deploy_mongodb():
     print()
     print("=== Kubernetes Base and MongoDB ===")
 
+    apply_manifest("enable-network-policy.yaml")
+
     for filename in (
         "namespace.yaml",
         "storage-class.yaml",
         "mongo-service.yaml",
+        "mongo-networkpolicy.yaml",
         "mongo-statefulset.yaml",
     ):
         apply_manifest(filename)
