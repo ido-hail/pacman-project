@@ -25,6 +25,7 @@ STATE_BUCKET = "pacman-terraform-state-506456084249-us-east-1"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TERRAFORM_DIR = PROJECT_ROOT / "terraform"
+BOOTSTRAP_DIR = TERRAFORM_DIR / "bootstrap"
 K8S_DIR = PROJECT_ROOT / "k8s"
 MONITORING_VALUES = (
     PROJECT_ROOT / "monitoring" / "kube-prometheus-values.yaml"
@@ -205,7 +206,10 @@ def verify_aws_identity():
     print("AWS account verification passed.")
 
 
-def verify_state_bucket():
+def ensure_state_bucket():
+    print()
+    print("=== Terraform State Bootstrap ===")
+
     result = run(
         [
             "aws",
@@ -217,14 +221,53 @@ def verify_state_bucket():
         allow_failure=True,
     )
 
-    if result.returncode != 0:
-        fail(
-            "Terraform state bucket was not found or is inaccessible: "
-            f"{STATE_BUCKET}"
-        )
+    if result.returncode == 0:
+        print(f"Terraform state bucket exists: {STATE_BUCKET}")
+        return
 
-    print(f"Terraform state bucket: {STATE_BUCKET}")
-    print("State bucket verification passed.")
+    print(f"Terraform state bucket not found: {STATE_BUCKET}")
+    print("Creating Terraform remote-state backend...")
+
+    run(
+        [
+            "terraform",
+            f"-chdir={BOOTSTRAP_DIR}",
+            "init",
+            "-reconfigure",
+            "-input=false",
+            "-no-color",
+        ],
+        live=True,
+    )
+
+    run(
+        [
+            "terraform",
+            f"-chdir={BOOTSTRAP_DIR}",
+            "apply",
+            "-auto-approve",
+            "-input=false",
+            "-no-color",
+            f"-var=aws_region={AWS_REGION}",
+        ],
+        live=True,
+    )
+
+    verify = run(
+        [
+            "aws",
+            "s3api",
+            "head-bucket",
+            "--bucket",
+            STATE_BUCKET,
+        ],
+        allow_failure=True,
+    )
+
+    if verify.returncode != 0:
+        fail("Terraform state bucket bootstrap failed.")
+
+    print("Terraform state bucket bootstrap completed.")
 
 
 def get_project_cluster():
@@ -1290,7 +1333,7 @@ def main():
 
     print()
     verify_aws_identity()
-    verify_state_bucket()
+    ensure_state_bucket()
 
     verify_runtime_is_off()
 
